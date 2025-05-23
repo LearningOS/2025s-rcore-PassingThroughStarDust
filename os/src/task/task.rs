@@ -6,6 +6,12 @@ use crate::mm::{
 };
 use crate::trap::{trap_handler, TrapContext};
 
+/// ** for chapter 4 exercises
+use crate::config::MAX_SYSCALL_NUM;
+use crate::mm::{
+    VirtPageNum, PageTableEntry, 
+};
+
 /// The task control block (TCB) of a task.
 pub struct TaskControlBlock {
     /// Save task context
@@ -28,6 +34,10 @@ pub struct TaskControlBlock {
 
     /// Program break
     pub program_brk: usize,
+
+    /// ** for chapter 4 exercises
+    /// syscall count record
+    pub syscall_count: [usize; MAX_SYSCALL_NUM],
 }
 
 impl TaskControlBlock {
@@ -63,6 +73,7 @@ impl TaskControlBlock {
             base_size: user_sp,
             heap_bottom: user_sp,
             program_brk: user_sp,
+            syscall_count: [0; MAX_SYSCALL_NUM], // ** for chapter 4 exercises
         };
         // prepare TrapContext in user space
         let trap_cx = task_control_block.get_trap_cx();
@@ -95,6 +106,48 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    /// ** for chapter 4 exercises
+    /// get the syscall count
+    pub fn get_syscall_count(&self, id: usize) -> usize {
+        self.syscall_count[id]
+    }
+
+    /// ** for chapter 4 exercises
+    /// upd the syscall count
+    pub fn add_syscall_count(&mut self, id: usize) {
+        self.syscall_count[id] += 1;
+    }
+
+    /// ** for chapter 4 exercises
+    /// copy from user space to kernel space
+    pub fn copy_from_user(&self, va: VirtAddr, len: usize, buf: &mut [u8]) -> isize{
+        self.memory_set.copy_from_user(va, len, buf)
+    }
+
+    /// ** for chapter 4 exercises
+    /// copy from kernel space to user space
+    pub fn copy_to_user(&self, va: VirtAddr, len: usize, buf: &[u8]) -> isize{
+        self.memory_set.copy_to_user(va, len, buf)
+    }
+
+    /// ** for chapter 4 exercises
+    /// translate vpn to ppn
+    pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
+        self.memory_set.translate(vpn)
+    }
+
+    /// ** for chapter 4 exercises
+    /// Umap va range
+    pub fn range_unmap(&mut self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> isize {
+        self.memory_set.range_unmap(start_vpn, end_vpn)
+    }
+
+    /// ** for chapter 4 exercises
+    /// Map va range
+    pub fn range_map(&mut self, start_vpn: VirtPageNum, end_vpn: VirtPageNum, map_perm: MapPermission) -> isize {
+        self.memory_set.range_map(start_vpn, end_vpn, map_perm)
     }
 }
 

@@ -17,6 +17,7 @@ mod task;
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
+use crate::mm::*;   // ** for chapter 4 exercises
 use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
@@ -153,6 +154,58 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    /// ** for chapter 4 exercises
+    /// Get the current 'Running' task's syscall count.
+    fn get_syscall_count(&self, id: usize) -> usize {
+        let inner = self.inner.exclusive_access();
+		inner.tasks[inner.current_task].get_syscall_count(id)
+    }
+
+    /// ** for chapter 4 exercises
+    /// Add 1 to the current 'Running' task's syscall count.
+    fn add_syscall_count(& self, id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+		inner.tasks[cur].add_syscall_count(id)
+    }
+
+    /// ** for chapter 4 exercises
+    /// copy from user space to kernel space
+    pub fn copy_from_user(&self, va: VirtAddr, len: usize, buf: &mut [u8]) -> isize {
+        let inner = self.inner.exclusive_access();
+		inner.tasks[inner.current_task].copy_from_user(va, len, buf)
+    }
+
+    /// ** for chapter 4 exercises
+    /// copy from kernel space to user space
+    pub fn copy_to_user(&self, va: VirtAddr, len: usize, buf: &[u8]) -> isize {
+        let inner = self.inner.exclusive_access();
+		inner.tasks[inner.current_task].copy_to_user(va, len, buf)
+    }
+
+    /// ** for chapter 4 exercises
+    /// translate vpn to ppn
+    pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
+        let inner = self.inner.exclusive_access();
+		inner.tasks[inner.current_task].translate(vpn)
+    }
+
+    /// ** for chapter 4 exercises
+    /// Umap va range
+    pub fn range_unmap(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+		inner.tasks[cur].range_unmap(start_vpn, end_vpn)
+    }
+
+    /// ** for chapter 4 exercises
+    /// Map va range
+    pub fn range_map(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum, map_perm: MapPermission) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let cur = inner.current_task;
+		inner.tasks[cur].range_map(start_vpn, end_vpn, map_perm)
+    }
 }
 
 /// Run the first task in task list.
@@ -201,4 +254,46 @@ pub fn current_trap_cx() -> &'static mut TrapContext {
 /// Change the current 'Running' task's program break
 pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
+}
+
+/// ** for chapter 4 exercises
+/// Get the current 'Running' task's syscall count.
+pub fn get_syscall_count(id: usize) -> usize {	
+    TASK_MANAGER.get_syscall_count(id)
+}
+
+/// ** for chapter 4 exercises
+/// Add 1 to the current 'Running' task's syscall count.
+pub fn add_syscall_count(id: usize) {	
+    TASK_MANAGER.add_syscall_count(id)
+}
+
+/// ** for chapter 4 exercises
+/// Copy from the current 'Running' task's address space.
+pub fn copy_from_user(va: VirtAddr, len: usize, buf: &mut [u8]) -> isize {
+    TASK_MANAGER.copy_from_user(va, len, buf)
+}
+
+/// ** for chapter 4 exercises
+/// Copy to the current 'Running' task's address space.
+pub fn copy_to_user(va: VirtAddr, len: usize, buf: &[u8]) -> isize {
+    TASK_MANAGER.copy_to_user(va, len, buf)
+}
+
+/// ** for chapter 4 exercises
+/// convert vpn to ppn
+pub fn translate(vpn: VirtPageNum) -> Option<PageTableEntry> {
+    TASK_MANAGER.translate(vpn)
+}
+
+/// ** for chapter 4 exercises
+/// Umap va range
+pub fn range_unmap(start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> isize{
+    TASK_MANAGER.range_unmap(start_vpn, end_vpn)
+}
+
+/// ** for chapter 4 exercises
+/// Map va range
+pub fn range_map(start_vpn: VirtPageNum, end_vpn: VirtPageNum, map_perm: MapPermission) -> isize {
+    TASK_MANAGER.range_map(start_vpn, end_vpn, map_perm)
 }
