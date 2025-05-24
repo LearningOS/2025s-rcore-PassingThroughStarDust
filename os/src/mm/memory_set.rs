@@ -37,6 +37,46 @@ pub struct MemorySet {
 }
 
 impl MemorySet {
+    /// ** for chapter 5 exercises
+    /// is all mapped
+    pub fn is_all_unmapped(&self, s_vpn: VirtPageNum, e_vpn: VirtPageNum) -> bool {
+        let mut s_vpn = s_vpn;
+        while s_vpn <= e_vpn {
+            if !self.page_table.is_mapped(s_vpn) {
+                s_vpn.step();
+            }else{
+                return false;
+            }
+        }
+        true
+    }
+    /// ** for chapter 5 exercises
+    /// is all unmapped
+    pub fn is_all_mapped(&self, s_vpn: VirtPageNum, e_vpn: VirtPageNum) -> bool {
+        if s_vpn == e_vpn {
+            return self.page_table.is_mapped(s_vpn);
+        }
+        let mut s_vpn = s_vpn;
+        while s_vpn <= e_vpn {
+            if self.page_table.is_mapped(s_vpn) {
+                s_vpn.step();
+            }else{
+                return false;
+            }
+        }
+        true
+    }
+    /// ** for chapter 5 exercises
+    /// munmap a range of virtual pages
+    pub fn munmap(&mut self, s_vpn: VirtPageNum, e_vpn: VirtPageNum) {
+        for (i, area) in self.areas.iter_mut().enumerate() {
+            if area.vpn_range.get_start() <= s_vpn && area.vpn_range.get_end() >= e_vpn {
+                area.unmap(&mut self.page_table);
+                self.areas.swap_remove(i);
+                break;
+            }
+        }
+    }
     /// Create a new empty `MemorySet`.
     pub fn new_bare() -> Self {
         Self {

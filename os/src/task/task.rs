@@ -1,8 +1,8 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::TRAP_CONTEXT_BASE;
-use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::config::{DEFAULT_TASK_PRIORITY, TRAP_CONTEXT_BASE};
+use crate::mm::{MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
@@ -37,6 +37,13 @@ impl TaskControlBlock {
 }
 
 pub struct TaskControlBlockInner {
+    /// ** for chapter 5 exercises
+    /// stride of the task
+    pub stride: usize,
+    /// ** for chapter 5 exercises
+    /// priority of the task
+    pub priority: usize,
+
     /// The physical page number of the frame where the trap context is placed
     pub trap_cx_ppn: PhysPageNum,
 
@@ -85,6 +92,46 @@ impl TaskControlBlockInner {
     pub fn is_zombie(&self) -> bool {
         self.get_status() == TaskStatus::Zombie
     }
+    /// ** for chapter 5 exercises
+    /// mmap
+    pub fn mmap(&mut self, start: usize, len: usize, prot: usize) -> isize{
+        if len == 0 || (prot & !0x7 != 0) || (prot & 0x7 == 0) {
+            return -1;
+        }
+        let start_va = VirtAddr::from(start);
+        if !start_va.aligned() {
+            return -1;
+        }
+        let end_va: VirtAddr = (start + len).into();
+
+        if !self.memory_set.is_all_unmapped(start_va.floor(), end_va.floor()) {
+            return -1;
+        }
+
+        let mut permission = MapPermission::U;
+        if prot & 0x1 != 0 { permission |= MapPermission::R; }
+        if prot & 0x2 != 0 { permission |= MapPermission::W }
+        if prot & 0x4 != 0 { permission |= MapPermission::X }
+
+        self.memory_set.insert_framed_area(start_va, end_va, permission);
+        0
+    }
+    /// munmap
+    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
+        let start_va = VirtAddr::from(start);
+        if !start_va.aligned() {
+            return -1;
+        }
+        let s_vpn = VirtAddr::from(start).floor();
+        let e_vpn = VirtAddr::from(start + len - 1).floor();
+
+        if !self.memory_set.is_all_mapped(s_vpn, e_vpn) {
+            return -1;
+        }
+
+        self.memory_set.munmap(s_vpn, e_vpn);
+        0
+    }
 }
 
 impl TaskControlBlock {
@@ -108,6 +155,8 @@ impl TaskControlBlock {
             kernel_stack,
             inner: unsafe {
                 UPSafeCell::new(TaskControlBlockInner {
+                    stride: 0,
+                    priority: DEFAULT_TASK_PRIORITY,
                     trap_cx_ppn,
                     base_size: user_sp,
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
@@ -173,6 +222,8 @@ impl TaskControlBlock {
             .unwrap()
             .ppn();
         // alloc a pid and a kernel stack in kernel space
+        let stride = parent_inner.stride;
+        let priority = parent_inner.priority;
         let pid_handle = pid_alloc();
         let kernel_stack = kstack_alloc();
         let kernel_stack_top = kernel_stack.get_top();
@@ -181,6 +232,8 @@ impl TaskControlBlock {
             kernel_stack,
             inner: unsafe {
                 UPSafeCell::new(TaskControlBlockInner {
+                    stride,
+                    priority,
                     trap_cx_ppn,
                     base_size: parent_inner.base_size,
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
@@ -204,6 +257,18 @@ impl TaskControlBlock {
         task_control_block
         // **** release child PCB
         // ---- release parent PCB
+    }
+
+    /// spawn a new process
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
+        let task = Arc::new(Self::new(elf_data));
+        task.inner_exclusive_access().parent = Some(Arc::downgrade(self));
+        
+        // add child
+        let mut inner = self.inner_exclusive_access();
+        inner.children.push(Arc::clone(&task));
+
+        task
     }
 
     /// get pid of process
