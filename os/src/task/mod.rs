@@ -22,7 +22,8 @@ use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
 
 pub use context::TaskContext;
-
+// ** for chapter 3 exercises
+use crate::syscall::{ NUM_SYSCALL_TYPES, SYSCALL_WRITE, SYSCALL_EXIT, SYSCALL_YIELD, SYSCALL_GET_TIME, SYSCALL_TRACE};
 /// The task manager, where all the tasks are managed.
 ///
 /// Functions implemented on `TaskManager` deals with all task state transitions
@@ -45,6 +46,18 @@ pub struct TaskManagerInner {
     tasks: [TaskControlBlock; MAX_APP_NUM],
     /// id of current `Running` task
     current_task: usize,
+
+    // ** for chapter 3 exercises
+    // calling counts of each syscall
+    /* 
+        5 syscall types and their index: 
+            SYSCALL_WRITE       -       0
+            SYSCALL_EXIT        -       1
+            SYSCALL_YIELD       -       2
+            SYSCALL_GET_TIME    -       3
+            SYSCALL_TRACE       -       4
+    */
+    syscall_counts: [[usize; NUM_SYSCALL_TYPES]; MAX_APP_NUM],
 }
 
 lazy_static! {
@@ -65,6 +78,7 @@ lazy_static! {
                 UPSafeCell::new(TaskManagerInner {
                     tasks,
                     current_task: 0,
+                    syscall_counts: [[0; NUM_SYSCALL_TYPES]; MAX_APP_NUM], // ** for chapter 3 exercises
                 })
             },
         }
@@ -135,6 +149,41 @@ impl TaskManager {
             panic!("All applications completed!");
         }
     }
+
+    // ** for chapter 3 exercises
+    /// for add_syscall_count and get_syscall_count, get the syscall count's index in syscall_counts
+    fn get_syscall_count_idx(syscall_id: usize) -> usize {
+        match syscall_id {
+            SYSCALL_WRITE => 0,
+            SYSCALL_EXIT => 1,
+            SYSCALL_YIELD => 2,
+            SYSCALL_GET_TIME => 3,
+            SYSCALL_TRACE => 4,
+            _ => panic!("Unsupported syscall_id: {}", syscall_id),
+        }
+    }
+    // ** for chapter 3 exercises
+    /// when a syscall is called, the count of it will increment by 1
+    pub fn add_syscall_count(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current_task: usize = inner.current_task;
+
+        let idx = Self::get_syscall_count_idx(syscall_id);
+
+        inner.syscall_counts[current_task][idx] += 1;
+    }
+
+    // ** for chapter 3 exercises
+    /// get the count of related syscall
+    pub fn get_syscall_count(&self, syscall_id: usize) -> usize {
+        let inner = self.inner.exclusive_access();
+        let current_task: usize = inner.current_task;
+
+        let idx = Self::get_syscall_count_idx(syscall_id);
+
+        inner.syscall_counts[current_task][idx]
+    }
+    
 }
 
 /// Run the first task in task list.
@@ -168,4 +217,16 @@ pub fn suspend_current_and_run_next() {
 pub fn exit_current_and_run_next() {
     mark_current_exited();
     run_next_task();
+}
+
+// ** for chapter 3 exercises
+/// when a syscall is called, the count of it will increment by 1
+pub fn add_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.add_syscall_count(syscall_id);
+}
+
+// ** for chapter 3 exercises
+/// get the count of related syscall
+pub fn get_syscall_count(syscall_id: usize) -> usize {
+    TASK_MANAGER.get_syscall_count(syscall_id)
 }
