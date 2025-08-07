@@ -70,6 +70,11 @@ impl PageTableEntry {
     pub fn executable(&self) -> bool {
         (self.flags() & PTEFlags::X) != PTEFlags::empty()
     }
+    // ** for chapter 4 exercises
+    /// The page pointered by page table entry is accessible in U mode?
+    pub fn user_mode_accessible(&self) -> bool {
+        (self.flags() & PTEFlags::U) != PTEFlags::empty()
+    }
 }
 
 /// page table structure
@@ -122,32 +127,39 @@ impl PageTable {
         let mut result: Option<&mut PageTableEntry> = None;
         for (i, idx) in idxs.iter().enumerate() {
             let pte = &mut ppn.get_pte_array()[*idx];
+            // ** for chapter 4 exercises
+            /*
+                Fix a potential security vulnerability：
+                the original code will return an invalid PTE if given a unmapped VPN.
+            */
+            if !pte.is_valid() {
+                return None;
+            }
             if i == 2 {
                 result = Some(pte);
                 break;
             }
-            if !pte.is_valid() {
-                return None;
-            }
+            // Original Code
+            /*
+                if i == 2 {
+                    result = Some(pte);
+                    break;
+                }
+                if i == 2 {
+                    result = Some(pte);
+                    break;
+                }
+            */
             ppn = pte.ppn();
         }
         result
     }
     /// set the map between virtual page number and physical page number
     #[allow(unused)]
-    /*pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
+    pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) {
         let pte = self.find_pte_create(vpn).unwrap();
         assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
         *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
-    } */
-    pub fn map(&mut self, vpn: VirtPageNum, ppn: PhysPageNum, flags: PTEFlags) -> isize {
-        if let Some(pte) = self.find_pte_create(vpn) {
-            assert!(!pte.is_valid(), "vpn {:?} is mapped before mapping", vpn);
-            *pte = PageTableEntry::new(ppn, flags | PTEFlags::V);
-            return 0;
-        } else {
-            return -1;
-        }
     }
     /// remove the map between virtual page number and physical page number
     #[allow(unused)]

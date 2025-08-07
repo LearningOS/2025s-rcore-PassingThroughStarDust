@@ -14,9 +14,8 @@ use alloc::vec::Vec;
 use core::arch::asm;
 use lazy_static::*;
 use riscv::register::satp;
-
 // ** for chapter 4 exercises
-use crate::mm::translated_byte_buffer;
+use super::count_unalloc_frame;
 
 extern "C" {
     fn stext();
@@ -66,24 +65,13 @@ impl MemorySet {
             None,
         );
     }
-    /* fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
+    fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) {
         map_area.map(&mut self.page_table);
         if let Some(data) = data {
             map_area.copy_data(&mut self.page_table, data);
         }
         self.areas.push(map_area);
-    } */
-
-    /// ** for chapter 4 exercises
-    fn push(&mut self, mut map_area: MapArea, data: Option<&[u8]>) -> isize{
-        let res = map_area.map(&mut self.page_table);
-        if let Some(data) = data {
-            map_area.copy_data(&mut self.page_table, data);
-        }
-        self.areas.push(map_area);
-        res
     }
-
     /// Mention that trampoline is not collected by areas.
     fn map_trampoline(&mut self) {
         self.page_table.map(
@@ -277,126 +265,210 @@ impl MemorySet {
         }
     }
 
-    /// ** for chapter 4 exercises
-    /// Check the flags
-    pub fn check_flags(&self, va: VirtAddr, len: usize, flags: PTEFlags) -> bool {
-        
-		let start_va: VirtAddr = va;
-		let end_va: VirtAddr = (start_va.0 + len).into();
-        if end_va < start_va {
-            return false;
-        }
-		let start_vpn: VirtPageNum = start_va.floor();
-		let end_vpn: VirtPageNum = end_va.ceil();
+    // ** for chapter 4 exercises
+    /// copy data from kernel space to the address in user memory set
+    pub fn copy_to_user(&mut self, start_va: VirtAddr, len: usize, buf: &[u8]) {
+        let mut current: usize = start_va.into();
+        let end = current + len;
+        let mut len_copied = 0;
+        // copying by slice is more convienient than copying by bytes
+        while current < end {
+            let current_va = VirtAddr::from(current);
+            let mut current_vpn = current_va.floor();
+            let current_ppn = self.page_table.translate(current_vpn).unwrap().ppn();
+            let current_pa: usize = PhysAddr::from(current_ppn).into();
+            current_vpn.step();
+            let mut stop_point_va = VirtAddr::from(end);
+            stop_point_va = stop_point_va.min(current_vpn.into());
+            let len_slice = stop_point_va.0 - current_va.0; 
 
-		let vpn_range = VPNRange::new(start_vpn, end_vpn);		
+            let slice_src = unsafe {
+                core::slice::from_raw_parts(buf.as_ptr().wrapping_add(len_copied), len_slice)
+            };
+            let slice_dst = unsafe {
+                let ptr_dst = usize::from(current_pa).wrapping_add(current_va.page_offset()) as *mut u8;
+                core::slice::from_raw_parts_mut(ptr_dst, len_slice)
+            };
+            slice_dst.copy_from_slice(slice_src);
+
+            current += len_slice;
+            len_copied += len_slice;
+        }
+    }
+
+    // ** for chapter 4 exercises
+    /// read a byte from the given virtual address in the user space
+    pub fn read_byte_from_user(&self, va: VirtAddr) -> isize {
+        let vpn = va.floor();
+        if let Some(pte) = self.page_table.translate(vpn) {
+            if pte.readable() && pte.user_mode_accessible() {
+                let ppn = pte.ppn();
+                let pa: usize = PhysAddr::from(ppn).into();
+                return unsafe { (pa as *const u8).wrapping_add(va.page_offset()).read_volatile() } as isize;
+            }
+        }
+        -1
+    }
+
+    // ** for chapter 4 exercises
+    /// write a given byte to the given virtual address in the user space 
+    pub fn write_byte_to_user(&mut self, va: VirtAddr, data: u8) -> isize {
+        let vpn = va.floor();
+        if let Some(pte) = self.page_table.translate(vpn) {
+            // R == 0 && W == 1 is illegal in riscv
+            if pte.readable() && pte.writable() && pte.user_mode_accessible() {
+                let ppn = pte.ppn();
+                let pa: usize = PhysAddr::from(ppn).into();
+                unsafe { (pa as *mut u8).wrapping_add(va.page_offset()).write_volatile(data) };
+                return 0;
+            }
+        }
+        -1
+    }
+    
+    // ** for chapter 4 exercises
+    fn count_mapped_page(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> usize {
+        let mut end_vpn = end_vpn;
+        end_vpn.step();
+        let vpn_range = VPNRange::new(start_vpn, end_vpn);
+        let mut count = 0;
         for vpn in vpn_range {
-            if let Some(pte) = self.translate(vpn) {
-                if (pte.flags() & flags) != flags {
-                    return false;
+            if self.page_table.translate(vpn).is_some() {
+                count += 1;
+            }
+            // A change is made to the function "find_pte" in os/src/mm/page_table.rs.
+            // If insisting using the original code, the above "if" block will lead to a bug.
+            // To deal with that, use the following if block and add sentence [1] or [2].
+            /* 
+                if let Some(pte) = self.page_table.translate(vpn) {
+                    // if pte.is_valid() { count += 1; } // [1]
+                    // if pte.ppn().0 != 0 { count += 1; } // [2]
                 }
-            } else {
-                return false;
-            }
+            */
         }
-        true
+        count
     }
 
-    /// ** for chapter 4 exercises
-    /// Copy from user address space to kernel space
-    pub fn copy_from_user(&self, va: VirtAddr, len: usize, buf: &mut [u8]) -> isize{
-        if buf.len() < len {
-            return -1;
-            //panic!("copy_from_user: len exceed.");
+    // ** for chapter 4 exercises
+    /// map a range of memory in the user space
+    pub fn mmap_to_user(&mut self, start: VirtAddr, len: usize, port: usize) -> isize {
+        let end: VirtAddr = (usize::from(start) + len - 1).into();
+        let start_vpn = start.floor();
+        let end_vpn = end.floor();
+        let num_pages = end.0 - start.0 + 1;
+
+        /*
+            4 conditions must to be satisfied:
+                1. the value of "start" must be aligned by page
+                2. only the lowest 3 bits of "perm" can be non-zero
+                3. the lowest 3 bits of "perm" cannot be all zero
+                4. no page is previously mapped among the region [start, start + len)
+        */
+        if start.0 % PAGE_SIZE == 0 && port & !0x7 == 0 && port & 0x7 != 0 
+            && self.count_mapped_page(start_vpn, end_vpn) == 0
+            && num_pages <= count_unalloc_frame()
+        {
+            let mut permission = MapPermission::U;
+            if port & 0x1 == 0x1 { permission |= MapPermission::R; }
+            if port & 0x2 == 0x2 { permission |= MapPermission::W; }
+            if port & 0x4 == 0x4 { permission |= MapPermission::X; }
+
+            // considering a case:
+            // if the addr is aligned, then addr.floor() == addr.ceil()
+            let upper_bound = if end.aligned() { end.0 + 1 } else { end.0 };
+            self.insert_framed_area(start, upper_bound.into(), permission);
+            return 0;
         }
-        if !self.check_flags(va, len, PTEFlags::U | PTEFlags::R) {
-            return -1;
-            //panic!("copy_from_user: permission invailid.");
-        }
-        let tr_buf = translated_byte_buffer(self.token(), va.0 as *const u8, len);
-        let mut cur = 0;
-        for src in tr_buf {
-            let end = cur + src.len();
-            buf[cur..end].copy_from_slice(src);
-            cur = end;
-        }
-        len as isize
+        -1
     }
 
-    /// ** for chapter 4 exercises
-    /// Copy from kernel address space to user space
-    pub fn copy_to_user(&self, va: VirtAddr, len: usize, buf: &[u8]) -> isize {
-        if buf.len() > len {
-            return -1;
-            //panic!("copy_to_user: len exceed.");
-        }
-        if !self.check_flags(va, len, PTEFlags::U | PTEFlags::W) {
-            return -1;
-            //panic!("copy_from_user: permission invailid.");
-        }
-        let tr_buf = translated_byte_buffer(self.token(), va.0 as *const u8, len);
-        let mut cur = 0;
-        for dst in tr_buf {
-            let end = cur + dst.len();
-            dst.copy_from_slice(&buf[cur..end]);
-            cur = end;
-        }
-        len as isize
-    }
+    // ** for chapter 4 exercises
+    /// unmap a range of memory in the user space
+    pub fn munmap_to_user(&mut self, start: VirtAddr, len: usize) -> isize {
+        let end: VirtAddr = (usize::from(start) + len - 1).into();
+        let start_vpn = start.floor();
+        let mut end_vpn = end.floor();
+        let num_pages = end_vpn.0 - start_vpn.0 + 1;
 
-    /// ** for chapter 4 exercises
-    /// Check if the vpn in the map set
-    pub fn in_map_area(&self, vpn: VirtPageNum) -> bool {
-        for map_area in &self.areas {
-            if vpn >= map_area.vpn_range.get_start() && vpn < map_area.vpn_range.get_end() {
-                return true;
+        /*
+            2 conditions must to be satisfied:
+                1. the value of "start" must be aligned by page
+                2. no page is previously unmapped among the region [start, start + len)
+        */
+        if start.aligned() && self.count_mapped_page(start_vpn, end_vpn) == num_pages {
+            let mut idx: isize = -1;    // initialized as -1 to avoid mistaking indexing
+            for (i, area) in self.areas.iter().enumerate() {
+                if area.vpn_range.get_start() <= start_vpn && end_vpn < area.vpn_range.get_end() {
+                    idx = i as isize;
+                    break;
+                }
             }
-        }
-        false
-    }
 
-    /// ** for chapter 4 exercises
-    /// Umap va range
-    pub fn range_unmap(&mut self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> isize {
-        for vpn in VPNRange::new(start_vpn, end_vpn) {
-            if !self.in_map_area(vpn) {
-                return -1;
-            }
-        } 
-        let mut del_area_id: Vec<usize> = Vec::new();
-        let mut split_areas: Vec<MapArea> = Vec::new();
-        for (i, map_area) in self.areas.iter_mut().enumerate() {
-            let start_area = map_area.vpn_range.get_start();
-            let end_area = map_area.vpn_range.get_end();
-            let start_unmap = start_area.max(start_vpn);
-            let end_unmap = end_area.min(end_vpn);
-            if start_unmap < end_unmap {
-                del_area_id.push(i);
-                if start_unmap > start_area {
-                    split_areas.push(map_area.split_from(start_unmap));
-                }  
-                if end_unmap < end_area {
-                    split_areas.push(map_area.split_to(end_unmap));
-                } 
-                map_area.range_unmap(&mut self.page_table, start_unmap, end_unmap);
-            }
-        }
-        while let Some(area_id) = del_area_id.pop() {
-            self.areas.remove(area_id);
-        }
-        self.areas.append(&mut split_areas);
-        0
-    }
+            if idx >= 0 {
+                let idx = idx as usize;
+                let areas = &mut self.areas;
 
-    /// ** for chapter 4 exercises
-    /// Map va range
-    pub fn range_map(&mut self, start_vpn: VirtPageNum, end_vpn: VirtPageNum, map_perm: MapPermission) -> isize {
-        for vpn in VPNRange::new(start_vpn, end_vpn) {
-            if self.in_map_area(vpn) {
-                return -1;
+                /*
+                    Insert remained areas after unmapping, only two will be considered:
+                        1. [areas[idx].vpn_range.l, start_vpn)
+                        2. (end_vpn, areas[idx].vpn_range.r)
+                */
+                // [areas[idx].vpn_range.l, start_vpn)
+                let area_start_vpn = areas[idx].vpn_range.get_start();
+                if start_vpn != area_start_vpn {
+                    let vpn_range = VPNRange::new(area_start_vpn, start_vpn);
+                    let map_perm = areas[idx].map_perm;
+
+                    let mut data_frames: BTreeMap<VirtPageNum, FrameTracker> = BTreeMap::new();
+                    let mut vpn = area_start_vpn;
+                    while vpn < start_vpn {
+                        let ppn = areas[idx].data_frames.get(&vpn).unwrap().ppn;
+                        data_frames.insert(vpn, FrameTracker { ppn });
+                        vpn.step();
+                    }
+
+                    areas.push(MapArea {
+                        vpn_range,
+                        data_frames,
+                        map_type: MapType::Framed,
+                        map_perm
+                    });
+                }
+                
+                // (end_vpn, area.vpn_range.r)
+                let area_end_vpn = areas[idx].vpn_range.get_end();
+                if end_vpn.0 != area_end_vpn.0 - 1 {
+                    let vpn_range = VPNRange::new(end.ceil(), area_end_vpn);
+                    let map_perm = areas[idx].map_perm;
+                    
+                    let mut data_frames: BTreeMap<VirtPageNum, FrameTracker> = BTreeMap::new();
+                    let mut vpn = end.ceil();
+                    while vpn < area_end_vpn {
+                        let ppn = areas[idx].data_frames.get(&vpn).unwrap().ppn;
+                        data_frames.insert(vpn, FrameTracker { ppn });
+                        vpn.step();
+                    }
+
+                    areas.push(MapArea {
+                        vpn_range,
+                        data_frames,
+                        map_type: MapType::Framed,
+                        map_perm
+                    });
+                }
+
+                // unmap dropped virtual pages in page table
+                end_vpn.step();
+                let vpn_range = VPNRange::new(start_vpn, end_vpn);
+                for vpn in vpn_range {
+                    self.page_table.unmap(vpn);
+                }
+
+                self.areas.swap_remove(idx);
+                return 0;
             }
-        } 
-        self.push(MapArea::new(start_vpn.into(), end_vpn.into(), MapType::Framed, map_perm), None)
+        }
+        -1
     }
 }
 /// map area structure, controls a contiguous piece of virtual memory
@@ -423,7 +495,7 @@ impl MapArea {
             map_perm,
         }
     }
-    /* pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
+    pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
         let ppn: PhysPageNum;
         match self.map_type {
             MapType::Identical => {
@@ -437,24 +509,6 @@ impl MapArea {
         }
         let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
         page_table.map(vpn, ppn, pte_flags);
-    } */
-    pub fn map_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) -> isize {
-        let ppn: PhysPageNum;
-        match self.map_type {
-            MapType::Identical => {
-                ppn = PhysPageNum(vpn.0);
-            }
-            MapType::Framed => {
-                if let Some(frame) = frame_alloc() {
-                    ppn = frame.ppn;
-                    self.data_frames.insert(vpn, frame);
-                } else {
-                    return -1;
-                }
-            }
-        }
-        let pte_flags = PTEFlags::from_bits(self.map_perm.bits).unwrap();
-        page_table.map(vpn, ppn, pte_flags)
     }
     #[allow(unused)]
     pub fn unmap_one(&mut self, page_table: &mut PageTable, vpn: VirtPageNum) {
@@ -463,19 +517,10 @@ impl MapArea {
         }
         page_table.unmap(vpn);
     }
-    /* pub fn map(&mut self, page_table: &mut PageTable) {
+    pub fn map(&mut self, page_table: &mut PageTable) {
         for vpn in self.vpn_range {
             self.map_one(page_table, vpn);
         }
-    } */
-    /// ** for chapter 4 exercises
-    pub fn map(&mut self, page_table: &mut PageTable) -> isize {
-        for vpn in self.vpn_range {
-            if self.map_one(page_table, vpn) == -1 {
-                return -1;
-            }
-        }
-        0
     }
     #[allow(unused)]
     pub fn unmap(&mut self, page_table: &mut PageTable) {
@@ -493,8 +538,7 @@ impl MapArea {
     #[allow(unused)]
     pub fn append_to(&mut self, page_table: &mut PageTable, new_end: VirtPageNum) {
         for vpn in VPNRange::new(self.vpn_range.get_end(), new_end) {
-            // self.map_one(page_table, vpn)
-            self.map_one(page_table, vpn); // ** for chapter 4 exercises
+            self.map_one(page_table, vpn)
         }
         self.vpn_range = VPNRange::new(self.vpn_range.get_start(), new_end);
     }
@@ -518,57 +562,6 @@ impl MapArea {
                 break;
             }
             current_vpn.step();
-        }
-    }
-
-    /// ** for chapter 4 exercises
-    /// Split the map area to new end
-    pub fn split_to(&mut self, new_end: VirtPageNum) -> Self {
-        let split_vpn_range = VPNRange::new(new_end, self.vpn_range.get_end());
-        let split_map_type = self.map_type;
-        let split_map_perm = self.map_perm;
-        let mut split_data_frames: BTreeMap<VirtPageNum, FrameTracker> = BTreeMap::new();
-        for vpn in split_vpn_range {
-            if let Some(frame_tracer) = self.data_frames.remove(&vpn) {
-                split_data_frames.insert(vpn, frame_tracer);
-            }
-        }
-        Self {
-            vpn_range: split_vpn_range,
-            data_frames: split_data_frames,
-            map_type: split_map_type,
-            map_perm: split_map_perm,
-        }
-    }
-    
-    /// ** for chapter 4 exercises
-    /// Split the map area from new start 
-    pub fn split_from(&mut self, new_start: VirtPageNum) -> Self {
-        let split_vpn_range = VPNRange::new(self.vpn_range.get_start(), new_start);
-        let split_map_type = self.map_type;
-        let split_map_perm = self.map_perm;
-        let mut split_data_frames: BTreeMap<VirtPageNum, FrameTracker> = BTreeMap::new();
-        for vpn in split_vpn_range {
-            if let Some(frame_tracer) = self.data_frames.remove(&vpn) {
-                split_data_frames.insert(vpn, frame_tracer);
-            }
-        }
-        Self {
-            vpn_range: split_vpn_range,
-            data_frames: split_data_frames,
-            map_type: split_map_type,
-            map_perm: split_map_perm,
-        }
-    }
-
-    /// ** for chapter 4 exercises
-    /// Range unmap
-    pub fn range_unmap(&mut self, page_table: &mut PageTable,start_unmap: VirtPageNum, end_unmap: VirtPageNum) {
-        for vpn in VPNRange::new(start_unmap, end_unmap) {
-            if self.map_type == MapType::Framed {
-                self.data_frames.remove(&vpn);
-            }
-            page_table.unmap(vpn);
         }
     }
 }

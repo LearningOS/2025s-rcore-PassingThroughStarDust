@@ -17,13 +17,26 @@ mod task;
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
-use crate::mm::*;   // ** for chapter 4 exercises
 use alloc::vec::Vec;
 use lazy_static::*;
 use switch::__switch;
 pub use task::{TaskControlBlock, TaskStatus};
 
 pub use context::TaskContext;
+// ** for chapter 4 exercises
+use crate::{
+    mm::VirtAddr,
+    syscall::{
+        SYSCALL_WRITE,
+        SYSCALL_EXIT,
+        SYSCALL_YIELD,
+        SYSCALL_GET_TIME,
+        SYSCALL_TRACE,
+        SYSCALL_MMAP,
+        SYSCALL_MUNMAP,
+        SYSCALL_SBRK
+    }
+};
 
 /// The task manager, where all the tasks are managed.
 ///
@@ -155,56 +168,98 @@ impl TaskManager {
         }
     }
 
-    /// ** for chapter 4 exercises
-    /// Get the current 'Running' task's syscall count.
-    fn get_syscall_count(&self, id: usize) -> usize {
-        let inner = self.inner.exclusive_access();
-		inner.tasks[inner.current_task].get_syscall_count(id)
-    }
-
-    /// ** for chapter 4 exercises
-    /// Add 1 to the current 'Running' task's syscall count.
-    fn add_syscall_count(& self, id: usize) {
+    // ** for chapter 4 exercises
+    /// copy data from kernel space to user space
+    pub fn copy_to_user(&self, start_va: VirtAddr, len: usize, buf: &[u8]) {
         let mut inner = self.inner.exclusive_access();
-        let cur = inner.current_task;
-		inner.tasks[cur].add_syscall_count(id)
+        let current_task = inner.current_task;
+        let memory_set = &mut inner.tasks[current_task].memory_set;
+        memory_set.copy_to_user(start_va, len, buf);
     }
 
-    /// ** for chapter 4 exercises
-    /// copy from user space to kernel space
-    pub fn copy_from_user(&self, va: VirtAddr, len: usize, buf: &mut [u8]) -> isize {
-        let inner = self.inner.exclusive_access();
-		inner.tasks[inner.current_task].copy_from_user(va, len, buf)
-    }
-
-    /// ** for chapter 4 exercises
-    /// copy from kernel space to user space
-    pub fn copy_to_user(&self, va: VirtAddr, len: usize, buf: &[u8]) -> isize {
-        let inner = self.inner.exclusive_access();
-		inner.tasks[inner.current_task].copy_to_user(va, len, buf)
-    }
-
-    /// ** for chapter 4 exercises
-    /// translate vpn to ppn
-    pub fn translate(&self, vpn: VirtPageNum) -> Option<PageTableEntry> {
-        let inner = self.inner.exclusive_access();
-		inner.tasks[inner.current_task].translate(vpn)
-    }
-
-    /// ** for chapter 4 exercises
-    /// Umap va range
-    pub fn range_unmap(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> isize {
+    // ** for chapter 4 exercises
+    /// read a byte from the given virtual address in the user space
+    pub fn read_byte_from_user(&self, va: VirtAddr) -> isize {
         let mut inner = self.inner.exclusive_access();
-        let cur = inner.current_task;
-		inner.tasks[cur].range_unmap(start_vpn, end_vpn)
+        let current_task = inner.current_task;
+        let memory_set = &mut inner.tasks[current_task].memory_set;
+        memory_set.read_byte_from_user(va)
     }
 
-    /// ** for chapter 4 exercises
-    /// Map va range
-    pub fn range_map(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum, map_perm: MapPermission) -> isize {
+    // ** for chapter 4 exercises
+    /// write a given byte to the given virtual address in the user space 
+    pub fn write_byte_to_user(&self, va: VirtAddr, data: u8) -> isize {
         let mut inner = self.inner.exclusive_access();
-        let cur = inner.current_task;
-		inner.tasks[cur].range_map(start_vpn, end_vpn, map_perm)
+        let current_task = inner.current_task;
+        let memory_set = &mut inner.tasks[current_task].memory_set;
+        memory_set.write_byte_to_user(va, data)
+    }
+
+    // ** for chapter 4 exercises
+    // get the index of a syscall in the syscall count manager
+    /* 
+        8 syscall types and their indexes: 
+            SYSCALL_WRITE       -       0
+            SYSCALL_EXIT        -       1
+            SYSCALL_YIELD       -       2
+            SYSCALL_GET_TIME    -       3
+            SYSCALL_TRACE       -       4
+            SYSCALL_MMAP        -       5
+            SYSCALL_MUNMAP      -       6
+            SYSCALL_SBRK        -       7
+    */
+    fn get_syscall_count_idx(syscall_id: usize) -> usize {
+        match syscall_id {
+            SYSCALL_WRITE => 0,
+            SYSCALL_EXIT => 1,
+            SYSCALL_YIELD => 2,
+            SYSCALL_GET_TIME => 3,
+            SYSCALL_TRACE => 4,
+            SYSCALL_MMAP => 5,
+            SYSCALL_MUNMAP => 6,
+            SYSCALL_SBRK => 7,
+            _ => panic!("Unsupported syscall_id: {}", syscall_id),
+        }
+    }
+
+    // ** for chapter 4 exercises
+    /// add 1 to the syscall count of given syscall id in the user space
+    pub fn add_syscall_count(&self, syscall_id: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+        let task = &mut inner.tasks[current_task];
+        let idx = Self::get_syscall_count_idx(syscall_id);
+        task.syscall_counts[idx] += 1;
+    }
+
+    // ** for chapter 4 exercises
+    /// get the syscall count of given syscall id in the user space
+    pub fn get_syscall_count(&self, syscall_id: usize) -> usize {
+        let inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+        let task = &inner.tasks[current_task];
+        let idx = Self::get_syscall_count_idx(syscall_id);
+        task.syscall_counts[idx]
+    }
+
+    // ** for chapter 4 exercises
+    /// map a range of memory in the user space
+    pub fn mmap_to_user(&self, start: VirtAddr, len: usize, port: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+        let task = &mut inner.tasks[current_task];
+        let memory_set = &mut task.memory_set;
+        memory_set.mmap_to_user(start, len, port)
+    }
+
+    // ** for chapter 4 exercises
+    /// unmap a range of memory in the user space
+    pub fn munmap_to_user(&self, start: VirtAddr, len: usize) -> isize {
+        let mut inner = self.inner.exclusive_access();
+        let current_task = inner.current_task;
+        let task = &mut inner.tasks[current_task];
+        let memory_set = &mut task.memory_set;
+        memory_set.munmap_to_user(start, len)
     }
 }
 
@@ -256,44 +311,44 @@ pub fn change_program_brk(size: i32) -> Option<usize> {
     TASK_MANAGER.change_current_program_brk(size)
 }
 
-/// ** for chapter 4 exercises
-/// Get the current 'Running' task's syscall count.
-pub fn get_syscall_count(id: usize) -> usize {	
-    TASK_MANAGER.get_syscall_count(id)
+// ** for chapter 4 exercises
+/// copy data from kernel space to the current user space
+pub fn copy_to_user(start_va: VirtAddr, len: usize, buf: &[u8]) {
+    TASK_MANAGER.copy_to_user(start_va, len, buf);
 }
 
-/// ** for chapter 4 exercises
-/// Add 1 to the current 'Running' task's syscall count.
-pub fn add_syscall_count(id: usize) {	
-    TASK_MANAGER.add_syscall_count(id)
+// ** for chapter 4 exercises
+/// read a byte from the given virtual address in the user space
+pub fn read_byte_from_user(va: VirtAddr) -> isize {
+    TASK_MANAGER.read_byte_from_user(va)
 }
 
-/// ** for chapter 4 exercises
-/// Copy from the current 'Running' task's address space.
-pub fn copy_from_user(va: VirtAddr, len: usize, buf: &mut [u8]) -> isize {
-    TASK_MANAGER.copy_from_user(va, len, buf)
+// ** for chapter 4 exercises
+/// write a given byte to the given virtual address in the user space 
+pub fn write_byte_to_user(va: VirtAddr, data: u8) -> isize {
+    TASK_MANAGER.write_byte_to_user(va, data)
 }
 
-/// ** for chapter 4 exercises
-/// Copy to the current 'Running' task's address space.
-pub fn copy_to_user(va: VirtAddr, len: usize, buf: &[u8]) -> isize {
-    TASK_MANAGER.copy_to_user(va, len, buf)
+// ** for chapter 4 exercises
+/// add 1 to the syscall count of given syscall id in the user space
+pub fn add_syscall_count(syscall_id: usize) {
+    TASK_MANAGER.add_syscall_count(syscall_id);
 }
 
-/// ** for chapter 4 exercises
-/// convert vpn to ppn
-pub fn translate(vpn: VirtPageNum) -> Option<PageTableEntry> {
-    TASK_MANAGER.translate(vpn)
+// ** for chapter 4 exercises
+/// get the syscall count of given syscall id in the user space
+pub fn get_syscall_count(syscall_id: usize) -> usize {
+    TASK_MANAGER.get_syscall_count(syscall_id)
 }
 
-/// ** for chapter 4 exercises
-/// Umap va range
-pub fn range_unmap(start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> isize{
-    TASK_MANAGER.range_unmap(start_vpn, end_vpn)
+// ** for chapter 4 exercises
+/// map a range of memory in the user space
+pub fn mmap_to_user(start: VirtAddr, len: usize, port: usize) -> isize {
+    TASK_MANAGER.mmap_to_user(start, len, port)
 }
 
-/// ** for chapter 4 exercises
-/// Map va range
-pub fn range_map(start_vpn: VirtPageNum, end_vpn: VirtPageNum, map_perm: MapPermission) -> isize {
-    TASK_MANAGER.range_map(start_vpn, end_vpn, map_perm)
+// ** for chapter 4 exercises
+/// unmap a range of memory in the user space
+pub fn munmap_to_user(start: VirtAddr, len: usize) -> isize {
+    TASK_MANAGER.munmap_to_user(start, len)
 }
