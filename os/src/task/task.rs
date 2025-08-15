@@ -1,13 +1,16 @@
 //! Types related to task management & Functions for completely changing TCB
 use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
-use crate::config::{DEFAULT_TASK_PRIORITY, TRAP_CONTEXT_BASE};
-use crate::mm::{MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::config::TRAP_CONTEXT_BASE;
+use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use core::cell::RefMut;
+// ** for chapter 5 exercises
+use crate::task::add_task;
+use crate::config::{BIG_STRIDE, DEFAULT_INITIAL_PRIORITY};
 
 /// Task control block structure
 ///
@@ -37,13 +40,6 @@ impl TaskControlBlock {
 }
 
 pub struct TaskControlBlockInner {
-    /// ** for chapter 5 exercises
-    /// stride of the task
-    pub stride: usize,
-    /// ** for chapter 5 exercises
-    /// priority of the task
-    pub priority: usize,
-
     /// The physical page number of the frame where the trap context is placed
     pub trap_cx_ppn: PhysPageNum,
 
@@ -75,6 +71,18 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
+
+    // ** for chapter 5 exercises
+    /// Process priority for stride scheduling
+    pub priority: usize,
+
+    // ** for chapter 5 exercises
+    /// Process stride for stride scheduling
+    pub stride: usize,
+
+    // ** for chapter 5 exercises
+    /// Process pass for stride scheduling
+    pub pass: usize,
 }
 
 impl TaskControlBlockInner {
@@ -91,46 +99,6 @@ impl TaskControlBlockInner {
     }
     pub fn is_zombie(&self) -> bool {
         self.get_status() == TaskStatus::Zombie
-    }
-    /// ** for chapter 5 exercises
-    /// mmap
-    pub fn mmap(&mut self, start: usize, len: usize, prot: usize) -> isize{
-        if len == 0 || (prot & !0x7 != 0) || (prot & 0x7 == 0) {
-            return -1;
-        }
-        let start_va = VirtAddr::from(start);
-        if !start_va.aligned() {
-            return -1;
-        }
-        let end_va: VirtAddr = (start + len).into();
-
-        if !self.memory_set.is_all_unmapped(start_va.floor(), end_va.floor()) {
-            return -1;
-        }
-
-        let mut permission = MapPermission::U;
-        if prot & 0x1 != 0 { permission |= MapPermission::R; }
-        if prot & 0x2 != 0 { permission |= MapPermission::W }
-        if prot & 0x4 != 0 { permission |= MapPermission::X }
-
-        self.memory_set.insert_framed_area(start_va, end_va, permission);
-        0
-    }
-    /// munmap
-    pub fn munmap(&mut self, start: usize, len: usize) -> isize {
-        let start_va = VirtAddr::from(start);
-        if !start_va.aligned() {
-            return -1;
-        }
-        let s_vpn = VirtAddr::from(start).floor();
-        let e_vpn = VirtAddr::from(start + len - 1).floor();
-
-        if !self.memory_set.is_all_mapped(s_vpn, e_vpn) {
-            return -1;
-        }
-
-        self.memory_set.munmap(s_vpn, e_vpn);
-        0
     }
 }
 
@@ -149,14 +117,16 @@ impl TaskControlBlock {
         let pid_handle = pid_alloc();
         let kernel_stack = kstack_alloc();
         let kernel_stack_top = kernel_stack.get_top();
+        // ** for chapter 5 exercises
+        // set priority and stride for stride scheduling
+        let priority = DEFAULT_INITIAL_PRIORITY;  // ** for chapter 5 exercises
+        let stride = BIG_STRIDE / priority; // ** for chapter 5 exercises
         // push a task context which goes to trap_return to the top of kernel stack
         let task_control_block = Self {
             pid: pid_handle,
             kernel_stack,
             inner: unsafe {
                 UPSafeCell::new(TaskControlBlockInner {
-                    stride: 0,
-                    priority: DEFAULT_TASK_PRIORITY,
                     trap_cx_ppn,
                     base_size: user_sp,
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
@@ -167,6 +137,9 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: user_sp,
                     program_brk: user_sp,
+                    priority,  // ** for chapter 5 exercises
+                    stride, // ** for chapter 5 exercises
+                    pass: 0,    // ** for chapter 5 exercises
                 })
             },
         };
@@ -222,18 +195,18 @@ impl TaskControlBlock {
             .unwrap()
             .ppn();
         // alloc a pid and a kernel stack in kernel space
-        let stride = parent_inner.stride;
-        let priority = parent_inner.priority;
         let pid_handle = pid_alloc();
         let kernel_stack = kstack_alloc();
         let kernel_stack_top = kernel_stack.get_top();
+        // ** for chapter 5 exercises
+        // set priority and stride for stride scheduling
+        let priority = 16;  // ** for chapter 5 exercises
+        let stride = BIG_STRIDE / priority; // ** for chapter 5 exercises
         let task_control_block = Arc::new(TaskControlBlock {
             pid: pid_handle,
             kernel_stack,
             inner: unsafe {
                 UPSafeCell::new(TaskControlBlockInner {
-                    stride,
-                    priority,
                     trap_cx_ppn,
                     base_size: parent_inner.base_size,
                     task_cx: TaskContext::goto_trap_return(kernel_stack_top),
@@ -244,6 +217,9 @@ impl TaskControlBlock {
                     exit_code: 0,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
+                    priority,  // ** for chapter 5 exercises
+                    stride, // ** for chapter 5 exercises
+                    pass: 0,    // ** for chapter 5 exercises
                 })
             },
         });
@@ -259,16 +235,69 @@ impl TaskControlBlock {
         // ---- release parent PCB
     }
 
-    /// spawn a new process
-    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> Arc<Self> {
-        let task = Arc::new(Self::new(elf_data));
-        task.inner_exclusive_access().parent = Some(Arc::downgrade(self));
-        
+    // ** for chapter 5 exercises
+    /// parent process spawn a new process that execute given target
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> usize {
+        // ---- access parent PCB exclusively
+        let mut parent_inner = self.inner_exclusive_access();
+        // memory_set with elf program headers/trampoline/trap context/user stack
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
+        let trap_cx_ppn = memory_set
+            .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
+            .unwrap()
+            .ppn();
+        // alloc a pid and a kernel stack in kernel space
+        let pid_handle = pid_alloc();
+        let new_pid = pid_handle.0;
+        let kernel_stack = kstack_alloc();
+        let kernel_stack_top = kernel_stack.get_top();
+        // ** for chapter 5 exercises
+        // set priority and stride for stride scheduling
+        let priority = DEFAULT_INITIAL_PRIORITY;  // ** for chapter 5 exercises
+        let stride = BIG_STRIDE / priority; // ** for chapter 5 exercises
+        // push a task context which goes to trap_return to the top of kernel stack
+        let task_control_block = Arc::new(TaskControlBlock {
+            pid: pid_handle,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    trap_cx_ppn,
+                    base_size: user_sp,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    parent: Some(Arc::downgrade(self)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    heap_bottom: parent_inner.heap_bottom,
+                    program_brk: parent_inner.program_brk,
+                    priority,  // ** for chapter 5 exercises
+                    stride, // ** for chapter 5 exercises
+                    pass: 0,    // ** for chapter 5 exercises
+                })
+            },
+        });
+        // initialize trap_cx
+        // **** access child PCB exclusively
+        let trap_cx = task_control_block.inner_exclusive_access().get_trap_cx();
+        *trap_cx = TrapContext::app_init_context(
+            entry_point,
+            user_sp,
+            KERNEL_SPACE.exclusive_access().token(),
+            kernel_stack_top,
+            trap_handler as usize,
+        );
+        // we do not have to move to next instruction since we have done it before
+        // for child process, fork returns 0
+        trap_cx.x[10] = 0;
         // add child
-        let mut inner = self.inner_exclusive_access();
-        inner.children.push(Arc::clone(&task));
-
-        task
+        parent_inner.children.push(task_control_block.clone());
+        // add new task to scheduler
+        add_task(task_control_block);
+        // return
+        new_pid
+        // **** release child PCB
+        // ---- release parent PCB
     }
 
     /// get pid of process
@@ -300,6 +329,14 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    // ** for chapter 5 exercises
+    /// set priority of process for stride scheduling
+    pub fn set_priority(&self, prio: usize) {
+        let mut inner = self.inner_exclusive_access();
+        inner.priority = prio;
+        inner.stride = BIG_STRIDE / prio;
     }
 }
 

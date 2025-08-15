@@ -1,45 +1,42 @@
+（注意： 实验手册里把 stride scheduling 中的 stride 和 pass 的含义搞反了，本文全部按纠正后的含义表述）
+
 # 1. 简单总结你实现的功能（200字以内，不要贴代码）。
-    (1) 迁移上一章的 sys_get_time sys_mmap sys_munmap 以适应新的进程结构。
-    (2) 实现一个完全 DIY 的系统调用 spawn，用以创建一个新进程。
-    (3) 
+1. 实现 sys_spawn
+    > a. 拆解 sys_fork 与 sys_exec 的实现，去除了拷贝父进程 memory_set 的步骤。
+2. 实现 sys_set_priority
+    > a. 在 TaskControlBlockInner 中添加 priority 、 stride 、pass 3 个成员变量（按约定，所有可变成员变量都放在 TaskControlBlockInner 中），并按照约定在 TaskControlBlock 的 new 、 fork 和 spawn 中对它们进行初始化。<br>
+      b. 为 TaskControlBlock 增加 set_priority 成员函数修改 priority 值，并按照 stride scheduling 定义同步变化
 
 # 2. 完成问答题。
 1. stride 算法深入
-    stride 算法原理非常简单，但是有一个比较大的问题。例如两个 pass = 10 的进程，使用 8bit 无符号整形储存 stride， p1.stride = 255, p2.stride = 250，在 p2 执行一个时间片后，理论上下一次应该 p1 执行。
-    > 实际情况是轮到 p1 执行吗？为什么？
-        不是。因为 p2.stride 会溢出，值变成 4 ，然后继续从 p2 开始执行。
-
-    我们之前要求进程优先级 >= 2 其实就是为了解决这个问题。可以证明， 在不考虑溢出的情况下 , 在进程优先级全部 >= 2 的情况下，如果严格按照算法执行，那么 STRIDE_MAX – STRIDE_MIN <= BigStride / 2。
-    > 为什么？尝试简单说明（不要求严格证明）。
-        因为 proi 最小值为 2 ，所以 pass 最大值为 BigStride / 2 ，因为进程的初始 stride 都为 0 ，执行一次后其值最大为 pass 的最大值,所以在运行过程中不同进程的 stride 差值不可能超过最大的 pass 值。
-
-    已知以上结论，考虑溢出的情况下，可以为 Stride 设计特别的比较器，让 BinaryHeap<Stride> 的 pop 方法能返回真正最小的 Stride。补全下列代码中的 partial_cmp 函数，假设两个 Stride 永远不会相等。
+    1) 不能， u8 类型所能表达的数字上限为 255 ， p2 执行完时间片后 pass += stride 会导致数据溢出， 得到 pass == 5 ， 导致下一次又是 p2 被执行。
+    2) 由 stride 的计算公式 $$ stride = \frac{BigStride}{priority} $$ 得出，stride 的值域为 $$ stride \in [1 , \frac{BigStride}{2}] $$ (左侧不能为0， 不然 pass 的值不会增加，导致该进程被永恒执行)， 因此可以得到 $$ \max{(STRIDE_ -MAX – STRIDE_ -MIN)} = \frac{BigStride}{2} - 1 \leq \frac{BigStride}{2} $$ 证明完毕。
+    3) 代码实现如下：
     ```rust
     use core::cmp::Ordering;
 
-    struct Stride(u64);
+    struct Pass(u64);
 
-    impl PartialOrd for Stride {
+    impl PartialOrd for Pass {
         fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-            // ...
+            let diff = self.0 - other.0;
+            if (diff.abs() << 1) < BIG_STRIDE {
+                if d < 0 { Some(Ordering::Greater) } else { Some(Ordering::Less) }
+            } else {
+                if d < 0 { Some(Ordering::Less) } else { Some(Ordering::Greater) }
+            }
+            /* 
+                Another method based on the fact that Pass is integer multiple of Stride (but this requires in).
+
+                But a potential bug could be inevitable if only apply comparing method on Pass: if Pass == (n * 10 + t) * stride (n is any usigned integer while t < 10), then it has the same performance with Pass that is equal to t * stride (t < 10). To solve it, renewing Pass value when n == 10 is effective.
+            */
+            
         }
     }
 
-    impl PartialEq for Stride {
+    impl PartialEq for Pass {
         fn eq(&self, other: &Self) -> bool {
             false
-        }
-    }
-    ```
-    TIPS: 使用 8 bits 存储 stride, BigStride = 255, 则: (125 < 255) == false, (129 < 255) == true.
-    解答：
-    ```rust
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        if (self.0 - other.0).abs() > 255/2 {
-            self.0.cmp(other.0.cmp)
-        }
-        else {
-            other.0.cmp(self.0)
         }
     }
     ```
@@ -58,4 +55,4 @@
 4. 我从未使用过他人的代码，不管是原封不动地复制，还是经过了某些等价转换。 我未曾也不会向他人（含此后各届同学）复制或公开我的实验代码，我有义务妥善保管好它们。 我提交至本实验的评测系统的代码，均无意于破坏或妨碍任何计算机系统的正常运转。 我清楚地知道，以上情况均为本课程纪律所禁止，若违反，对应的实验成绩将按“-100”分计。
 
 # 4. (optional) 你对本次实验设计及难度/工作量的看法，以及有哪些需要改进的地方，欢迎畅所欲言。
-暂无。
+无。

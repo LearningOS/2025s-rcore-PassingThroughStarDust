@@ -11,6 +11,8 @@ use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::sync::Arc;
 use lazy_static::*;
+// ** for chapter 5 exercises
+use crate::mm::VirtAddr;
 
 /// Processor management structure
 pub struct Processor {
@@ -43,6 +45,24 @@ impl Processor {
     ///Get current task in cloning semanteme
     pub fn current(&self) -> Option<Arc<TaskControlBlock>> {
         self.current.as_ref().map(Arc::clone)
+    }
+
+    // ** for chapter 5 exercises
+    /// copy a slice to the user space of running process
+    pub fn copy_to_user(&mut self, start: VirtAddr, len: usize, buffer: &[u8]) {
+        return self.current().unwrap().inner_exclusive_access().memory_set.copy_to_user(start, len, buffer);
+    }
+
+    // ** for chapter 5 exercises
+    /// map a range of memory in the user space
+    pub fn mmap_to_user(&mut self, start: VirtAddr, len: usize, port: usize) -> isize {
+        return self.current().unwrap().inner_exclusive_access().memory_set.mmap_to_user(start, len, port);
+    }
+
+    // ** for chapter 5 exercises
+    /// unmap a range of memory in the user space
+    pub fn munmap_to_user(&mut self, start: VirtAddr, len: usize) -> isize {
+        return self.current().unwrap().inner_exclusive_access().memory_set.munmap_to_user(start, len);
     }
 }
 
@@ -108,4 +128,22 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     unsafe {
         __switch(switched_task_cx_ptr, idle_task_cx_ptr);
     }
+}
+
+// ** for chapter 5 exercises
+/// copy a slice to the user space of running process
+pub fn copy_to_user(start: VirtAddr, len: usize, buffer: &[u8]) {
+    PROCESSOR.exclusive_access().copy_to_user(start, len, buffer);
+}
+
+// ** for chapter 5 exercises
+/// map a range of memory in the user space
+pub fn mmap_to_user(start: VirtAddr, len: usize, port: usize) -> isize {
+    PROCESSOR.exclusive_access().mmap_to_user(start, len, port)
+}
+
+// ** for chapter 5 exercises
+/// unmap a range of memory in the user space
+pub fn munmap_to_user(start: VirtAddr, len: usize) -> isize {
+    PROCESSOR.exclusive_access().munmap_to_user(start, len)
 }
