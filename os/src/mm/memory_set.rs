@@ -11,6 +11,8 @@ use alloc::vec::Vec;
 use core::arch::asm;
 use lazy_static::*;
 use riscv::register::satp;
+//  ** for chapter 6 exercises
+use super::count_unalloc_frame;
 
 extern "C" {
     fn stext();
@@ -317,6 +319,183 @@ impl MemorySet {
         } else {
             false
         }
+    }
+
+    // ** for chapter 6 exercises
+    /// copy a slice to the user space of running process
+    pub fn copy_to_user(&mut self, start: VirtAddr, len: usize, buffer: &[u8]) {
+        let mut current: usize = start.into();
+        let end = current + len;
+        let mut len_copied = 0;
+        // copying by slice is more convienient than copying by bytes
+        while current < end {
+            let current_va = VirtAddr::from(current);
+            let mut current_vpn = current_va.floor();
+            let current_ppn = self.page_table.translate(current_vpn).unwrap().ppn();
+            let current_pa: usize = PhysAddr::from(current_ppn).into();
+            current_vpn.step();
+            let mut stop_point_va = VirtAddr::from(end);
+            stop_point_va = stop_point_va.min(current_vpn.into());
+            let len_slice = stop_point_va.0 - current_va.0; 
+
+            let slice_src = unsafe {
+                core::slice::from_raw_parts(buffer.as_ptr().wrapping_add(len_copied), len_slice)
+            };
+            let slice_dst = unsafe {
+                let ptr = usize::from(current_pa).wrapping_add(current_va.page_offset()) as *mut u8;
+                core::slice::from_raw_parts_mut(ptr, len_slice)
+            };
+            slice_dst.copy_from_slice(slice_src);
+
+            current += len_slice;
+            len_copied += len_slice;
+        }
+    }
+
+    // ** for chapter 6 exercises
+    /// count number of mapped pages among a region
+    fn count_mapped_page(&self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> usize {
+        let mut end_vpn = end_vpn;
+        end_vpn.step();
+        let vpn_range = VPNRange::new(start_vpn, end_vpn);
+        let mut count = 0;
+        for vpn in vpn_range {
+            if self.page_table.translate(vpn).is_some() {
+                count += 1;
+            }
+            // A change is made to the function "find_pte" in os/src/mm/page_table.rs.
+            // If insisting using the original code, the above "if" block will lead to a bug.
+            // To deal with that, use the following if block and add sentence [1] or [2].
+            /* 
+                if let Some(pte) = self.page_table.translate(vpn) {
+                    // if pte.is_valid() { count += 1; } // [1]
+                    // if pte.ppn().0 != 0 { count += 1; } // [2]
+                }
+            */
+        }
+        count
+    }
+
+    // ** for chapter 6 exercises
+    /// map a range of memory in the user space
+    pub fn mmap_to_user(&mut self, start: VirtAddr, len: usize, port: usize) -> isize {
+        let end: VirtAddr = (usize::from(start) + len - 1).into();
+        let start_vpn = start.floor();
+        let end_vpn = end.floor();
+        let num_pages = end.0 - start.0 + 1;
+
+        /*
+            4 conditions must to be satisfied:
+                1. the value of "start" must be aligned by page
+                2. only the lowest 3 bits of "perm" can be non-zero
+                3. the lowest 3 bits of "perm" cannot be all zero
+                4. no page is previously mapped among the region [start, start + len)
+        */
+        if start.0 % PAGE_SIZE == 0 && port & !0x7 == 0 && port & 0x7 != 0 
+            && self.count_mapped_page(start_vpn, end_vpn) == 0
+            && num_pages <= count_unalloc_frame()
+        {
+            let mut permission = MapPermission::U;
+            if port & 0x1 == 0x1 { permission |= MapPermission::R; }
+            if port & 0x2 == 0x2 { permission |= MapPermission::W; }
+            if port & 0x4 == 0x4 { permission |= MapPermission::X; }
+
+            // considering a case:
+            // if the addr is aligned, then addr.floor() == addr.ceil()
+            let upper_bound = if end.aligned() { end.0 + 1 } else { end.0 };
+            self.insert_framed_area(start, upper_bound.into(), permission);
+            return 0;
+        }
+        -1
+    }
+
+    // ** for chapter 6 exercises
+    /// unmap a range of memory in the user space
+    pub fn munmap_to_user(&mut self, start: VirtAddr, len: usize) -> isize {
+        let end: VirtAddr = (usize::from(start) + len - 1).into();
+        let start_vpn = start.floor();
+        let mut end_vpn = end.floor();
+        let num_pages = end_vpn.0 - start_vpn.0 + 1;
+
+        /*
+            2 conditions must to be satisfied:
+                1. the value of "start" must be aligned by page
+                2. no page is previously unmapped among the region [start, start + len)
+        */
+        if start.aligned() && self.count_mapped_page(start_vpn, end_vpn) == num_pages {
+            let mut idx: isize = -1;    // initialized as -1 to avoid mistaking indexing
+            for (i, area) in self.areas.iter().enumerate() {
+                if area.vpn_range.get_start() <= start_vpn && end_vpn < area.vpn_range.get_end() {
+                    idx = i as isize;
+                    break;
+                }
+            }
+
+            if idx >= 0 {
+                let idx = idx as usize;
+                let areas = &mut self.areas;
+
+                /*
+                    Insert remained areas after unmapping, only two will be considered:
+                        1. [areas[idx].vpn_range.l, start_vpn)
+                        2. (end_vpn, areas[idx].vpn_range.r)
+                */
+                // [areas[idx].vpn_range.l, start_vpn)
+                let area_start_vpn = areas[idx].vpn_range.get_start();
+                if start_vpn != area_start_vpn {
+                    let vpn_range = VPNRange::new(area_start_vpn, start_vpn);
+                    let map_perm = areas[idx].map_perm;
+
+                    let mut data_frames: BTreeMap<VirtPageNum, FrameTracker> = BTreeMap::new();
+                    let mut vpn = area_start_vpn;
+                    while vpn < start_vpn {
+                        let ppn = areas[idx].data_frames.get(&vpn).unwrap().ppn;
+                        data_frames.insert(vpn, FrameTracker { ppn });
+                        vpn.step();
+                    }
+
+                    areas.push(MapArea {
+                        vpn_range,
+                        data_frames,
+                        map_type: MapType::Framed,
+                        map_perm
+                    });
+                }
+                
+                // (end_vpn, area.vpn_range.r)
+                let area_end_vpn = areas[idx].vpn_range.get_end();
+                if end_vpn.0 != area_end_vpn.0 - 1 {
+                    let vpn_range = VPNRange::new(end.ceil(), area_end_vpn);
+                    let map_perm = areas[idx].map_perm;
+                    
+                    let mut data_frames: BTreeMap<VirtPageNum, FrameTracker> = BTreeMap::new();
+                    let mut vpn = end.ceil();
+                    while vpn < area_end_vpn {
+                        let ppn = areas[idx].data_frames.get(&vpn).unwrap().ppn;
+                        data_frames.insert(vpn, FrameTracker { ppn });
+                        vpn.step();
+                    }
+
+                    areas.push(MapArea {
+                        vpn_range,
+                        data_frames,
+                        map_type: MapType::Framed,
+                        map_perm
+                    });
+                }
+
+                // unmap dropped virtual pages in page table
+                end_vpn.step();
+                let vpn_range = VPNRange::new(start_vpn, end_vpn);
+                for vpn in vpn_range {
+                    self.page_table.unmap(vpn);
+                }
+
+                self.areas.swap_remove(idx);
+                return 0;
+            }
+        }
+        -1
     }
 }
 /// map area structure, controls a contiguous piece of virtual memory

@@ -1,9 +1,13 @@
 //! File and filesystem-related syscalls
 use crate::fs::{open_file, OpenFlags, Stat};
-use crate::fs::{inode::ROOT_INODE, OSInode, StatMode,Stdin,Stdout}; // ** for chapter 6 exercises
 use crate::mm::{translated_byte_buffer, translated_str, UserBuffer};
 use crate::task::{current_task, current_user_token};
-use core::any::{self, Any}; // ** for chapter 6 exercises
+// ** for chapter 6 exercises
+use crate::{
+    fs::{linkat, unlinkat},
+    mm::VirtAddr,
+    task::copy_to_user
+};
 
 pub fn sys_write(fd: usize, buf: *const u8, len: usize) -> isize {
     trace!("kernel:pid[{}] sys_write", current_task().unwrap().pid.0);
@@ -57,10 +61,8 @@ pub fn sys_open(path: *const u8, flags: u32) -> isize {
         let mut inner = task.inner_exclusive_access();
         let fd = inner.alloc_fd();
         inner.fd_table[fd] = Some(inode);
-        println!("open file success!,fd={}", fd);
         fd as isize
     } else {
-        println!("open file fali!");
         -1
     }
 }
@@ -81,100 +83,88 @@ pub fn sys_close(fd: usize) -> isize {
 
 /// YOUR JOB: Implement fstat.
 pub fn sys_fstat(fd: usize, st: *mut Stat) -> isize {
+    /*
+        trace!(
+            "kernel:pid[{}] sys_fstat NOT IMPLEMENTED",
+            current_task().unwrap().pid.0
+        );
+        -1
+    */
+    trace!("kernel:pid[{}] sys_fstat", current_task().unwrap().pid.0);
+    // specific return values and their meanings are undefined,
+    // assume that 0 for successful and -1 for failed
     let task = current_task().unwrap();
     let inner = task.inner_exclusive_access();
-
-    // check legality
-    if fd >= inner.fd_table.len() || inner.fd_table[fd].is_none() {
-        println!("Invalid fd: {}", fd);
-        return -1;
+    // fd must be an existed value
+    if fd < inner.fd_table.len() {
+        // File must be opened (returning "Some" value when indexing the fd table)
+        if let Some(file) = &inner.fd_table[fd] {
+            let stat = file.get_stat();
+            let ptr = &stat as *const Stat as *const u8;
+            let len = core::mem::size_of::<Stat>();
+            let buffer = unsafe { core::slice::from_raw_parts(ptr, len) };
+            drop(inner);
+            copy_to_user(VirtAddr::from(st as usize), len, buffer);
+            return 0;
+        }
     }
-
-    let file_node = inner.fd_table[fd].as_ref().unwrap();
-
-    let any: &dyn Any = file_node.as_any();
-
-    println!("Attempting downcast for fd: {}", fd);
-    println!("File type name: {:?}", any::type_name_of_val(any));
-
-    let stat = if let Some(os_node) = any.downcast_ref::<OSInode>() {
-        println!("Successfully downcasted to OSInode");
-        let ino = os_node.get_inode_id();
-        let (block_id, block_offset) = os_node.get_inode_pos();
-        let nlink = ROOT_INODE.get_link_num(block_id, block_offset); 
-        Stat {
-            dev: 0,
-            ino,
-            mode: StatMode::FILE, 
-            nlink,
-            pad: [0; 7],
-        }
-    } else if any.is::<Stdin>() {
-        println!("Detected Stdin");
-        Stat {
-            dev: 0,
-            ino: 0,
-            mode: StatMode::FILE,
-            nlink: 1,
-            pad: [0; 7], 
-        }
-    } else if any.is::<Stdout>() {
-        println!("Detected Stdout");
-        Stat {
-            dev: 0,
-            ino: 1,
-            mode: StatMode::FILE,
-            nlink: 1,
-            pad: [0; 7],
-        }
-    } else {
-        println!("Unknown file type for fd: {}", fd);
-        return -1; 
-    };
-
-    // copy data from kernel space to user space
-    let token = inner.get_user_token();
-    let st_buffer = translated_byte_buffer(token, st as *const u8, core::mem::size_of::<Stat>());
-    if st_buffer.is_empty() && core::mem::size_of::<Stat>() > 0 {
-        println!("Failed to translate user buffer for stat");
-        return -1;
-    }
-    let stat_ptr = &stat as *const _ as *const u8;
-    let mut current_offset = 0;
-    for buf_slice in st_buffer.into_iter() {
-        let copy_len = buf_slice.len();
-        unsafe {
-            buf_slice.copy_from_slice(core::slice::from_raw_parts(
-                stat_ptr.add(current_offset),
-                copy_len,
-            ));
-        }
-        current_offset += copy_len;
-    }
-    0
+    -1
 }
 
 /// YOUR JOB: Implement linkat.
 pub fn sys_linkat(old_name: *const u8, new_name: *const u8) -> isize {
+    /*
+        trace!(
+            "kernel:pid[{}] sys_linkat NOT IMPLEMENTED",
+            current_task().unwrap().pid.0
+        );
+        -1
+    */
+    trace!("kernel:pid[{}] sys_linkat", current_task().unwrap().pid.0);
+    /*
+        Standard linkat interface implemented by Rust should be:
+            fn linkat(olddirfd: i32, oldpath: *const u8, newdirfd: i32, newpath: *const u8, flags: u32) -> i32
+        but for simplicity and compatibility of implementation, the following parameters are treat as constant
+        and thus ignored in function implementation:
+            1. olddirfd，newdirfd: constant as AT_FDCWD (-100);
+            2. flags: constant as 0.
+
+        Also, for simplicity, the case that new file routine is existed is not in consideration.
+    */
+    
+    // get old name and new name from current user space
     let token = current_user_token();
-    let old = translated_str(token, old_name);
-    let new = translated_str(token, new_name);
-    if old == new {
-        return -1;
+    let old_path = translated_str(token, old_name);
+    let new_path = translated_str(token, new_name);
+    // old name and new name shouldn't be the same
+    if old_path != new_path {
+        return linkat(&old_path, &new_path);
     }
-    ROOT_INODE.link(old.as_str(), new.as_str())
+    -1
 }
 
 /// YOUR JOB: Implement unlinkat.
 pub fn sys_unlinkat(name: *const u8) -> isize {
+    /*
+        trace!(
+            "kernel:pid[{}] sys_unlinkat NOT IMPLEMENTED",
+            current_task().unwrap().pid.0
+        );
+        -1
+    */
+    trace!("kernel:pid[{}] sys_unlinkat", current_task().unwrap().pid.0);
+    /*
+        Standard unlinkat interface implemented by Rust should be:
+            fn unlinkat(dirfd: i32, path: *const u8, flags: u32) -> i32
+        but for simplicity and compatibility of implementation, the following parameters are treat as constant
+        and thus ignored in function implementation:
+            1. dirfd: constant as AT_FDCWD (-100);
+            2. flags: constant as 0.
+
+        Consider the case of completely deleting a file 
+    */
+
     let token = current_user_token();
-    let name = translated_str(token, name);
-    if let Some(inode) = ROOT_INODE.find(name.as_str()) {
-        if ROOT_INODE.get_link_num(inode.block_id, inode.block_offset) == 1 {
-            // clear data if only one link exists
-            inode.clear();
-        }
-        return ROOT_INODE.unlink(name.as_str());
-    }
-    -1
+    let path = translated_str(token, name);
+    unlinkat(&path)
 }

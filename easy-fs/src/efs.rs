@@ -121,6 +121,15 @@ impl EasyFileSystem {
             (inode_id % inodes_per_block) as usize * inode_size,
         )
     }
+    // ** for chapter 6 exercises
+    /// Get inode id by disk inode position (block id and block offset)
+    pub fn get_inode_id(&self, block_id: u32, block_offset: usize) -> u32 {
+        let inode_size = core::mem::size_of::<DiskInode>();
+        let inodes_per_block = (BLOCK_SZ / inode_size) as u32;
+        // in get_disk_inode_pos, the calculation of block_id uses integer division, which is not reversible
+        // but block_offset must be able to divide B without remainder
+        (block_id - self.inode_area_start_block) * inodes_per_block + (block_offset / inode_size) as u32
+    }
     /// Get data block by id
     pub fn get_data_block_id(&self, data_block_id: u32) -> u32 {
         self.data_area_start_block + data_block_id
@@ -129,7 +138,11 @@ impl EasyFileSystem {
     pub fn alloc_inode(&mut self) -> u32 {
         self.inode_bitmap.alloc(&self.block_device).unwrap() as u32
     }
-
+    //  ** for chapter 6 exercises
+    /// Dealloc an inode
+    pub fn dealloc_inode(&mut self, inode_id: usize) {
+        self.inode_bitmap.dealloc(&self.block_device, inode_id);
+    }
     /// Allocate a data block
     pub fn alloc_data(&mut self) -> u32 {
         self.data_bitmap.alloc(&self.block_device).unwrap() as u32 + self.data_area_start_block
@@ -143,6 +156,15 @@ impl EasyFileSystem {
                     *p = 0;
                 })
             });
+        self.data_bitmap.dealloc(
+            &self.block_device,
+            (block_id - self.data_area_start_block) as usize,
+        )
+    }
+    //  ** for chapter 6 exercises
+    /// Weakly dealloc data block only by setting corresponding bitmap bits to 0
+    /// Deallocate a data block
+    pub fn dealloc_data_weak(&mut self, block_id: u32) {
         self.data_bitmap.dealloc(
             &self.block_device,
             (block_id - self.data_area_start_block) as usize,

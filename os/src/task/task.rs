@@ -1,15 +1,18 @@
 //! Types related to task management & Functions for completely changing TCB
-use super::{add_task, current_task,TaskContext};
+use super::TaskContext;
 use super::{kstack_alloc, pid_alloc, KernelStack, PidHandle};
 use crate::config::TRAP_CONTEXT_BASE;
-use crate::fs::{open_file, File, OpenFlags, Stdin, Stdout};
-use crate::mm::{translated_str,MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
+use crate::fs::{File, Stdin, Stdout};
+use crate::mm::{MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE};
 use crate::sync::UPSafeCell;
 use crate::trap::{trap_handler, TrapContext};
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefMut;
+// ** for chapter 6 exercises
+use super::add_task;
+use crate::config::{BIG_STRIDE, DEFAULT_INITIAL_PRIORITY};
 
 /// Task control block structure
 ///
@@ -18,10 +21,10 @@ pub struct TaskControlBlock {
     // Immutable
     /// Process identifier
     pub pid: PidHandle,
-    
+
     /// Kernel stack corresponding to PID
     pub kernel_stack: KernelStack,
-    
+
     /// Mutable
     inner: UPSafeCell<TaskControlBlockInner>,
 }
@@ -71,14 +74,18 @@ pub struct TaskControlBlockInner {
 
     /// Program break
     pub program_brk: usize,
-    
-    /// ** for chapter 6 exercises
-    /// stride
+
+    //  ** for chapter 6 exercises
+    /// Process priority for stride scheduling
+    pub priority: usize,
+
+    //  ** for chapter 6 exercises
+    /// Process stride for stride scheduling
     pub stride: usize,
 
-    /// ** for chapter 6 exercises
-    /// priority
-    pub priority: usize,
+    //  ** for chapter 6 exercises
+    /// Process pass for stride scheduling
+    pub pass: usize,
 }
 
 impl TaskControlBlockInner {
@@ -119,6 +126,10 @@ impl TaskControlBlock {
         let pid_handle = pid_alloc();
         let kernel_stack = kstack_alloc();
         let kernel_stack_top = kernel_stack.get_top();
+        // ** for chapter 6 exercises
+        // set priority and stride for stride scheduling
+        let priority = DEFAULT_INITIAL_PRIORITY;  // ** for chapter 6 exercises
+        let stride = BIG_STRIDE / priority; // ** for chapter 6 exercises
         // push a task context which goes to trap_return to the top of kernel stack
         let task_control_block = Self {
             pid: pid_handle,
@@ -143,8 +154,9 @@ impl TaskControlBlock {
                     ],
                     heap_bottom: user_sp,
                     program_brk: user_sp,
-                    stride: 0,
-                    priority: 16,
+                    priority,  // ** for chapter 6 exercises
+                    stride, // ** for chapter 6 exercises
+                    pass: 0,    // ** for chapter 6 exercises
                 })
             },
         };
@@ -210,6 +222,10 @@ impl TaskControlBlock {
                 new_fd_table.push(None);
             }
         }
+        // ** for chapter 6 exercises
+        // set priority and stride for stride scheduling
+        let priority = 16;  // ** for chapter 6 exercises
+        let stride = BIG_STRIDE / priority; // ** for chapter 6 exercises
         let task_control_block = Arc::new(TaskControlBlock {
             pid: pid_handle,
             kernel_stack,
@@ -226,8 +242,9 @@ impl TaskControlBlock {
                     fd_table: new_fd_table,
                     heap_bottom: parent_inner.heap_bottom,
                     program_brk: parent_inner.program_brk,
-                    stride: 0,
-                    priority: 16,
+                    priority,  // ** for chapter 6 exercises
+                    stride, // ** for chapter 6 exercises
+                    pass: 0,    // ** for chapter 6 exercises
                 })
             },
         });
@@ -243,78 +260,82 @@ impl TaskControlBlock {
         // ---- release parent PCB
     }
 
-    /// ** for chapter 6 exercises
-    ///parent process spawn a child process and run its task
-    pub fn spawn(&self, path: *const u8) -> isize {
-        //get elf data
-
+    // ** for chapter 5 exercises
+    /// parent process spawn a new process that execute given target
+    pub fn spawn(self: &Arc<Self>, elf_data: &[u8]) -> usize {
+        // ---- access parent PCB exclusively
         let mut parent_inner = self.inner_exclusive_access();
-        let token = parent_inner.get_user_token();
-        let path = translated_str(token, path);
-        if let Some(app_node) = open_file(path.as_str(),OpenFlags::RDONLY) {
-            //get app data from elf
-            let elf_data = app_node.read_all();
-            let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data.as_slice());
-            //get trap context
-            let trap_cx_ppn = memory_set
-                .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
-                .unwrap()
-                .ppn();
-            //alloc pid and kernel stack
-            let pid_handle = pid_alloc();
-            let kernel_stack = kstack_alloc();
-            let kernel_stack_top = kernel_stack.get_top();
-            //copy fd table
-            let mut new_fd_table : Vec<Option<Arc<dyn File+Send+Sync>>> = Vec::new();
-            for fd in parent_inner.fd_table.iter() {
-                if let Some(file) = fd {
-                    new_fd_table.push(Some(file.clone()));
-                } else {
-                    new_fd_table.push(None);
-                }
+        // memory_set with elf program headers/trampoline/trap context/user stack
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf_data);
+        let trap_cx_ppn = memory_set
+            .translate(VirtAddr::from(TRAP_CONTEXT_BASE).into())
+            .unwrap()
+            .ppn();
+        // alloc a pid and a kernel stack in kernel space
+        let pid_handle = pid_alloc();
+        let new_pid = pid_handle.0;
+        let kernel_stack = kstack_alloc();
+        let kernel_stack_top = kernel_stack.get_top();
+        // ** for chapter 6 exercises
+        // copy fd table
+        let mut new_fd_table: Vec<Option<Arc<dyn File + Send + Sync>>> = Vec::new();
+        for fd in parent_inner.fd_table.iter() {
+            if let Some(file) = fd {
+                new_fd_table.push(Some(file.clone()));
+            } else {
+                new_fd_table.push(None);
             }
-            //create a new task control block
-            let task_control_block = Arc::new(TaskControlBlock {
-                pid: pid_handle,
-                kernel_stack,
-                inner: unsafe {
-                    UPSafeCell::new(TaskControlBlockInner {
-                        trap_cx_ppn,
-                        base_size: parent_inner.base_size,
-                        task_cx: TaskContext::goto_trap_return(kernel_stack_top),
-                        task_status: TaskStatus::Ready,
-                        memory_set,
-                        parent: Some(Arc::downgrade(&current_task().unwrap())),
-                        children: Vec::new(),
-                        exit_code: 0,
-                        fd_table:new_fd_table,
-                        heap_bottom: parent_inner.heap_bottom,
-                        program_brk: parent_inner.program_brk,
-                        stride: 0,
-                        priority: 16,
-                    })
-                },
-            });
-
-            //add child
-            parent_inner.children.push(task_control_block.clone());
-            //prepare trap cx
-            let trap_cx = task_control_block.inner_exclusive_access().get_trap_cx();
-            *trap_cx = TrapContext::app_init_context(
-                entry_point,
-                user_sp,
-                KERNEL_SPACE.exclusive_access().token(),
-                kernel_stack_top,
-                trap_handler as usize,
-            );
-            add_task(task_control_block.clone());
-            let pid = task_control_block.pid.0 as isize;
-            pid
-        } else {
-            //无效路径
-            return -1;
         }
+        // ** for chapter 6 exercises
+        // set priority and stride for stride scheduling
+        let priority = DEFAULT_INITIAL_PRIORITY;  // ** for chapter 6 exercises
+        let stride = BIG_STRIDE / priority; // ** for chapter 6 exercises
+        // push a task context which goes to trap_return to the top of kernel stack
+        let task_control_block = Arc::new(TaskControlBlock {
+            pid: pid_handle,
+            kernel_stack,
+            inner: unsafe {
+                UPSafeCell::new(TaskControlBlockInner {
+                    trap_cx_ppn,
+                    base_size: user_sp,
+                    task_cx: TaskContext::goto_trap_return(kernel_stack_top),
+                    task_status: TaskStatus::Ready,
+                    memory_set,
+                    parent: Some(Arc::downgrade(self)),
+                    children: Vec::new(),
+                    exit_code: 0,
+                    fd_table: new_fd_table,
+                    heap_bottom: parent_inner.heap_bottom,
+                    program_brk: parent_inner.program_brk,
+                    priority,  // ** for chapter 5 exercises
+                    stride, // ** for chapter 5 exercises
+                    pass: 0,    // ** for chapter 5 exercises
+                })
+            },
+        });
+        // initialize trap_cx
+        // **** access child PCB exclusively
+        let trap_cx = task_control_block.inner_exclusive_access().get_trap_cx();
+        *trap_cx = TrapContext::app_init_context(
+            entry_point,
+            user_sp,
+            KERNEL_SPACE.exclusive_access().token(),
+            kernel_stack_top,
+            trap_handler as usize,
+        );
+        // we do not have to move to next instruction since we have done it before
+        // for child process, fork returns 0
+        trap_cx.x[10] = 0;
+        // add child
+        parent_inner.children.push(task_control_block.clone());
+        // add new task to scheduler
+        add_task(task_control_block);
+        // return
+        new_pid
+        // **** release child PCB
+        // ---- release parent PCB
     }
+
     /// get pid of process
     pub fn getpid(&self) -> usize {
         self.pid.0
@@ -344,6 +365,14 @@ impl TaskControlBlock {
         } else {
             None
         }
+    }
+
+    // ** for chapter 6 exercises
+    /// set priority of process for stride scheduling
+    pub fn set_priority(&self, prio: usize) {
+        let mut inner = self.inner_exclusive_access();
+        inner.priority = prio;
+        inner.stride = BIG_STRIDE / prio;
     }
 }
 

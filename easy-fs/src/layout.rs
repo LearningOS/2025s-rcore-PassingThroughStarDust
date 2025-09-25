@@ -235,6 +235,72 @@ impl DiskInode {
             });
     }
 
+    //  ** for chapter 6 exercises
+    /// Decrease the size of current disk inode
+    pub fn decrease_size(
+        &mut self,
+        new_size: u32,
+        block_device: &Arc<dyn BlockDevice>
+    ) {
+        let mut current_blocks = self.data_blocks() as usize;
+        self.size = new_size;
+        let total_blocks = self.data_blocks() as usize;
+
+        // dealloc indirect2
+        if current_blocks > INDIRECT1_BOUND {
+            // clear indirect2 from (a0, b0) -> (a1, b1)
+            let current_indirect2_blocks = current_blocks as usize - INDIRECT1_BOUND;
+            let total_indirect2_blocks = total_blocks as usize - INDIRECT1_BOUND;
+            let mut a0 = current_indirect2_blocks / INODE_INDIRECT1_COUNT;
+            let mut b0 = current_indirect2_blocks % INODE_INDIRECT1_COUNT;
+            let a1 = total_indirect2_blocks / INODE_INDIRECT1_COUNT;
+            let b1 = total_indirect2_blocks % INODE_INDIRECT1_COUNT;
+            get_block_cache(self.indirect2 as usize, Arc::clone(block_device))
+                .lock()
+                .modify(0, |indirect2: &mut IndirectBlock| {
+                    while(a0 > a1) || (a0 == a1 && b0 > b1) {
+                        // impossible that an indirect1 is allocated but its directs are unallocated
+                        if b0 == 0 {
+                            indirect2[a0] = 0;
+                            a0 -= 1;
+                            b0 = INODE_INDIRECT1_COUNT;
+                        }
+                        b0 -= 1;
+                        get_block_cache(indirect2[a0] as usize, Arc::clone(block_device))
+                            .lock()
+                            .modify(0, |indirect1: &mut IndirectBlock| {
+                                current_blocks -= 1;
+                                indirect1[b0] = 0;
+                            });
+                    }
+                });
+        }
+
+        // dealloc indirect1
+        if current_blocks > DIRECT_BOUND {
+            self.indirect2 = 0;
+            let end = total_blocks.max(DIRECT_BOUND);
+            get_block_cache(self.indirect1 as usize, Arc::clone(block_device))
+                .lock()
+                .modify(0, |indirect1: &mut IndirectBlock| {
+                    while current_blocks > end {
+                        current_blocks -= 1;
+                        indirect1[current_blocks - DIRECT_BOUND] = 0;
+                    }
+                });
+        }
+
+        // dealloc direct
+        if current_blocks > total_blocks {
+            self.indirect1 = 0;
+            while current_blocks > total_blocks {
+                current_blocks -= 1;
+                self.direct[current_blocks] = 0;
+            }
+        }
+        
+    }
+
     /// Clear size to zero and return blocks that should be deallocated.
     /// We will clear the block contents to zero later.
     pub fn clear_size(&mut self, block_device: &Arc<dyn BlockDevice>) -> Vec<u32> {
@@ -386,6 +452,12 @@ impl DiskInode {
             start = end_current_block;
         }
         write_size
+    }
+    
+    //  ** for chapter 6 exercises
+    /// Check if the size reaches the maximum
+    pub fn is_size_max(&self) -> bool {
+        self.size as usize == BLOCK_SZ * INDIRECT2_BOUND
     }
 }
 /// A directory entry

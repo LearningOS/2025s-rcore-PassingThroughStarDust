@@ -7,11 +7,12 @@
 use super::__switch;
 use super::{fetch_task, TaskStatus};
 use super::{TaskContext, TaskControlBlock};
-use crate::mm::{MapPermission, PageTableEntry, VPNRange, VirtAddr, VirtPageNum};
 use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::sync::Arc;
 use lazy_static::*;
+// ** for chapter 5 exercises
+use crate::mm::VirtAddr;
 
 /// Processor management structure
 pub struct Processor {
@@ -44,6 +45,24 @@ impl Processor {
     ///Get current task in cloning semanteme
     pub fn current(&self) -> Option<Arc<TaskControlBlock>> {
         self.current.as_ref().map(Arc::clone)
+    }
+
+    //  ** for chapter 6 exercises
+    /// copy a slice to the user space of running process
+    pub fn copy_to_user(&mut self, start: VirtAddr, len: usize, buffer: &[u8]) {
+        return self.current().unwrap().inner_exclusive_access().memory_set.copy_to_user(start, len, buffer);
+    }
+
+    //  ** for chapter 6 exercises
+    /// map a range of memory in the user space
+    pub fn mmap_to_user(&mut self, start: VirtAddr, len: usize, port: usize) -> isize {
+        return self.current().unwrap().inner_exclusive_access().memory_set.mmap_to_user(start, len, port);
+    }
+
+    //  ** for chapter 6 exercises
+    /// unmap a range of memory in the user space
+    pub fn munmap_to_user(&mut self, start: VirtAddr, len: usize) -> isize {
+        return self.current().unwrap().inner_exclusive_access().memory_set.munmap_to_user(start, len);
     }
 }
 
@@ -111,41 +130,20 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     }
 }
 
-///Get current task's page table
-pub fn get_current_page_table(vpn: VirtPageNum) -> Option<PageTableEntry> {
-    if let Some(current_task) = current_task() {
-        current_task
-            .inner_exclusive_access()
-            .memory_set
-            .translate(vpn)
-    } else {
-        None
-    }
+//  ** for chapter 6 exercises
+/// copy a slice to the user space of running process
+pub fn copy_to_user(start: VirtAddr, len: usize, buffer: &[u8]) {
+    PROCESSOR.exclusive_access().copy_to_user(start, len, buffer);
 }
 
-///create a new map area between a virtual add and physics area
-pub fn create_new_map_area(start_va: VirtAddr, end_va: VirtAddr, perm: MapPermission) {
-    current_task()
-        .unwrap()
-        .inner_exclusive_access()
-        .memory_set
-        .insert_framed_area(start_va, end_va, perm);
+//  ** for chapter  exercises
+/// map a range of memory in the user space
+pub fn mmap_to_user(start: VirtAddr, len: usize, port: usize) -> isize {
+    PROCESSOR.exclusive_access().mmap_to_user(start, len, port)
 }
 
-///remove the map from virtual add with start
-pub fn remove_map_area(start:usize,len:usize)->isize {
-    let start_vpn = VirtAddr::from(start).floor();
-    let end_vpn = VirtAddr::from(start+len).ceil();
-    let vpns = VPNRange::new(start_vpn, end_vpn);
-    for vpn in vpns {
-        if let Some(pte) = get_current_page_table(vpn) {
-            if !pte.is_valid() {
-                return -1;
-            }
-            current_task().unwrap().inner_exclusive_access().memory_set.remove_area_with_start_vpn(vpn);
-        } else {
-            return -1;
-        }
-    }
-    0
+//  ** for chapter 6 exercises
+/// unmap a range of memory in the user space
+pub fn munmap_to_user(start: VirtAddr, len: usize) -> isize {
+    PROCESSOR.exclusive_access().munmap_to_user(start, len)
 }

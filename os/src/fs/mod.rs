@@ -1,28 +1,12 @@
 //! File trait & inode(dir, file, pipe, stdin, stdout)
 
-pub mod inode;
+mod inode;
 mod stdio;
 
 use crate::mm::UserBuffer;
-use core::any::Any; // ** for chapter 6 exercises
-
-/// ** for chapter 6 exercises
-/// convert current type to &dyn Any
-pub trait AnyConvertor {
-    ///convert current type to &dyn Any
-    fn as_any(&self) -> &dyn Any;
-}
-
-impl<T: 'static> AnyConvertor for T {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
 
 /// trait File for all file types
-/// ** for chapter 6 exercises
-/// add trait Any
-pub trait File: Send + Sync + Any {
+pub trait File: Send + Sync {
     /// the file readable?
     fn readable(&self) -> bool;
     /// the file writable?
@@ -31,9 +15,9 @@ pub trait File: Send + Sync + Any {
     fn read(&self, buf: UserBuffer) -> usize;
     /// write to the file from buf, return the number of bytes written
     fn write(&self, buf: UserBuffer) -> usize;
-    /// ** for chapter 6 exercises
-    /// Convert the concrete file type to &dyn Any
-    fn as_any(&self) -> &dyn Any; 
+    //  ** for chapter 6 exercises
+    /// get file status
+    fn get_stat(&self) -> Stat;
 }
 
 /// The stat of a inode
@@ -49,7 +33,7 @@ pub struct Stat {
     /// number of hard links
     pub nlink: u32,
     /// unused pad
-    pub pad: [u64; 7],
+    pad: [u64; 7],
 }
 
 bitflags! {
@@ -67,3 +51,5 @@ bitflags! {
 
 pub use inode::{list_apps, open_file, OSInode, OpenFlags};
 pub use stdio::{Stdin, Stdout};
+//  ** for chapter 6 exercises
+pub use inode::{linkat, unlinkat};

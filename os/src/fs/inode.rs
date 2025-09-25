@@ -13,7 +13,8 @@ use alloc::vec::Vec;
 use bitflags::*;
 use easy_fs::{EasyFileSystem, Inode};
 use lazy_static::*;
-use core::any::Any; // ** for chapter 6 exercises
+// ** for chapter 6 exercises
+use super::{Stat, StatMode};
 
 /// inode in memory
 /// A wrapper around a filesystem inode
@@ -54,25 +55,9 @@ impl OSInode {
         }
         v
     }
-
-    /// ** for chapter 6 exercises
-    /// get current node id
-    pub fn get_inode_id(&self) -> u64 {
-        let inner = self.inner.exclusive_access();
-        inner.inode.block_id as u64
-    }
-
-    /// ** for chapter 6 exercises
-    /// get inode 'block_id' and 'block_offset'
-    pub fn get_inode_pos(&self) -> (usize, usize) {
-        let inner = self.inner.exclusive_access();
-        (inner.inode.block_id, inner.inode.block_offset)
-    }
 }
 
-
 lazy_static! {
-    ///ROOT_INODE
     pub static ref ROOT_INODE: Arc<Inode> = {
         let efs = EasyFileSystem::open(BLOCK_DEVICE.clone());
         Arc::new(EasyFileSystem::root_inode(&efs))
@@ -142,6 +127,18 @@ pub fn open_file(name: &str, flags: OpenFlags) -> Option<Arc<OSInode>> {
     }
 }
 
+//  ** for chapter 6 exercises
+/// Hard link 2 file paths
+pub fn linkat(old_path: &str, new_path: &str) -> isize {
+    ROOT_INODE.linkat(old_path, new_path)
+}
+
+//  ** for chapter 6 exercises
+/// Unlink a path to a file
+pub fn unlinkat(path: &str) -> isize {
+    ROOT_INODE.unlinkat(path)
+}
+
 impl File for OSInode {
     fn readable(&self) -> bool {
         self.readable
@@ -173,7 +170,28 @@ impl File for OSInode {
         }
         total_write_size
     }
-    fn as_any(&self) -> &dyn Any {
-        self
+    //  ** for chapter 6 exercises
+    fn get_stat(&self) -> Stat {
+        let inner = self.inner.exclusive_access();
+        let inode = inner.inode.clone();
+        let ino = inode.get_inode_id() as u64;
+        let mode = if inode.is_dir() { StatMode::DIR } else { StatMode::FILE };
+        let nlink = {
+            let mut sum: u32 = 0;
+            for name in ROOT_INODE.ls().iter() {
+                if ROOT_INODE.find(name).unwrap().get_inode_id() as u64 == ino {
+                    sum += 1;
+                }
+            }
+            sum
+        };
+
+        Stat {
+            dev: 0,         // default as 0 in this lab
+            ino,
+            mode,
+            nlink,      
+            pad: [0; 7]     // undefined of usage, default to 0
+        }
     }
 }
