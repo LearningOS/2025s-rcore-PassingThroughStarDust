@@ -1,56 +1,22 @@
+（依照要求， ch6 和 ch7 的问答题一并写入本报告内）
+
 # 1. 简单总结你实现的功能（200字以内，不要贴代码）。
-    (1) 迁移上一章的 sys_get_time sys_mmap sys_munmap 以适应新的进程结构。
-    (2) 实现一个完全 DIY 的系统调用 spawn，用以创建一个新进程。
-    (3) 
+1. 实现 sys_linkat
+    > a. 在 root inode 管理的 data blocks 中添加对应的 diretory entry。
+2. 实现 sys_unlinkat
+    > a. 检测给定文件名是否存在，若不存在则返回 -1， 若存在则检测其链接数， 链接数为 1 则将对应文件资源释放（仅释放 inodes，如果要释放 data blocks， 即写 0 ， 会消耗大量时间而通不过测试），然后从 root inode 管理的 data blocks 中删除对应 diretory entry（包括缩小 root inode 管理的区域）。<br>
+3. 实现 sys_stat
+    > a. 通过调用对应 inode 的成员方法，获取 Stat 结构体中 ino 、mode 成员变量的值。对于 nlink， 通过统计 root inode 中具有相同 inode id 的 diretory entry 数量来获取。
 
 # 2. 完成问答题。
-[ ch6 ]
+（ch6 部分）
 1. stride 算法深入
-    stride 算法原理非常简单，但是有一个比较大的问题。例如两个 pass = 10 的进程，使用 8bit 无符号整形储存 stride， p1.stride = 255, p2.stride = 250，在 p2 执行一个时间片后，理论上下一次应该 p1 执行。
-    > 实际情况是轮到 p1 执行吗？为什么？
-        不是。因为 p2.stride 会溢出，值变成 4 ，然后继续从 p2 开始执行。
+    1) root inode 是 root diretory 抽象。在 easy-fs 中，有且只有 root diretory 一个目录，因此通过 root inode 就可以索引到所有的文件。如果 root inode 损坏，则可能发生对文件的索引错误。
 
-    我们之前要求进程优先级 >= 2 其实就是为了解决这个问题。可以证明， 在不考虑溢出的情况下 , 在进程优先级全部 >= 2 的情况下，如果严格按照算法执行，那么 STRIDE_MAX – STRIDE_MIN <= BigStride / 2。
-    > 为什么？尝试简单说明（不要求严格证明）。
-        因为 proi 最小值为 2 ，所以 pass 最大值为 BigStride / 2 ，因为进程的初始 stride 都为 0 ，执行一次后其值最大为 pass 的最大值,所以在运行过程中不同进程的 stride 差值不可能超过最大的 pass 值。
+（ch7 部分）
+1. 类 Unix 系统命令行中的 "ls . | grep a" 指令。
+2. 建立一个共享的消息总线，所有进程都可以通过该消息总线来与其他进程通信，具体的实现可以参考计算机网络中的理论。
 
-    已知以上结论，考虑溢出的情况下，可以为 Stride 设计特别的比较器，让 BinaryHeap<Stride> 的 pop 方法能返回真正最小的 Stride。补全下列代码中的 partial_cmp 函数，假设两个 Stride 永远不会相等。
-    ```rust
-    use core::cmp::Ordering;
-
-    struct Stride(u64);
-
-    impl PartialOrd for Stride {
-        fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-            // ...
-        }
-    }
-
-    impl PartialEq for Stride {
-        fn eq(&self, other: &Self) -> bool {
-            false
-        }
-    }
-    ```
-    TIPS: 使用 8 bits 存储 stride, BigStride = 255, 则: (125 < 255) == false, (129 < 255) == true.
-    解答：
-    ```rust
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        if (self.0 - other.0).abs() > 255/2 {
-            self.0.cmp(other.0.cmp)
-        }
-        else {
-            other.0.cmp(self.0)
-        }
-    }
-    ```
-
-[ ch7 ]
-1. 举出使用 pipe 的一个实际应用的例子。
-    统计文件中不同行的数量。
-
-2. 如果需要在多个进程间互相通信，则需要为每一对进程建立一个管道，非常繁琐，请设计一个更易用的多进程通信机制。
-    使用统一的通信池, 除了通信发送和接受的内容还维护源和目的的地址标识, 内核根据源和目的地址进行进程间路由。
 # 3. 加入荣誉准则的内容。否则，你的提交将视作无效，本次实验的成绩将按“0”分计。
 1. 在完成本次实验的过程（含此前学习的过程）中，我曾分别与 以下各位 就（与本次实验相关的）以下方面做过交流，还在代码中对应的位置以注释形式记录了具体的交流对象及内容：
 
@@ -65,4 +31,4 @@
 4. 我从未使用过他人的代码，不管是原封不动地复制，还是经过了某些等价转换。 我未曾也不会向他人（含此后各届同学）复制或公开我的实验代码，我有义务妥善保管好它们。 我提交至本实验的评测系统的代码，均无意于破坏或妨碍任何计算机系统的正常运转。 我清楚地知道，以上情况均为本课程纪律所禁止，若违反，对应的实验成绩将按“-100”分计。
 
 # 4. (optional) 你对本次实验设计及难度/工作量的看法，以及有哪些需要改进的地方，欢迎畅所欲言。
-暂无。
+无。

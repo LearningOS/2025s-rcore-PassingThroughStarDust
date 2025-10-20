@@ -11,6 +11,8 @@ use crate::sync::UPSafeCell;
 use crate::trap::TrapContext;
 use alloc::sync::Arc;
 use lazy_static::*;
+//  ** for chapter 8 exercises
+use crate::mm::VirtAddr;
 
 /// Processor management structure
 pub struct Processor {
@@ -127,4 +129,10 @@ pub fn schedule(switched_task_cx_ptr: *mut TaskContext) {
     unsafe {
         __switch(switched_task_cx_ptr, idle_task_cx_ptr);
     }
+}
+
+//  ** for chapter 8 exercises
+/// Copy data slice from user space to kernel space
+pub fn copy_to_user(start: VirtAddr, len: usize, buffer: &[u8]) {
+    current_process().inner_exclusive_access().memory_set.copy_to_user(start, len, buffer);
 }

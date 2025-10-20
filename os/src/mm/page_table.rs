@@ -112,13 +112,28 @@ impl PageTable {
         let mut result: Option<&mut PageTableEntry> = None;
         for (i, idx) in idxs.iter().enumerate() {
             let pte = &mut ppn.get_pte_array()[*idx];
+            // ** for chapter 6 exercises
+            /*
+                Switch the sequence of 2 if block below to avoid getting invalid pte
+                when giving an unmapped VPN as input.
+            */
+            if !pte.is_valid() {
+                return None;
+            }
             if i == 2 {
                 result = Some(pte);
                 break;
             }
-            if !pte.is_valid() {
-                return None;
-            }
+            // Original Code
+            /*
+                if i == 2 {
+                    result = Some(pte);
+                    break;
+                }
+                if !pte.is_valid() {
+                    return None;
+                }
+            */
             ppn = pte.ppn();
         }
         result

@@ -293,6 +293,37 @@ impl MemorySet {
             false
         }
     }
+
+    // ** for chapter 6 exercises
+    /// copy a slice to the user space of running process
+    pub fn copy_to_user(&mut self, start: VirtAddr, len: usize, buffer: &[u8]) {
+        let mut current: usize = start.into();
+        let end = current + len;
+        let mut len_copied = 0;
+        // copying by slice is more convienient than copying by bytes
+        while current < end {
+            let current_va = VirtAddr::from(current);
+            let mut current_vpn = current_va.floor();
+            let current_ppn = self.page_table.translate(current_vpn).unwrap().ppn();
+            let current_pa: usize = PhysAddr::from(current_ppn).into();
+            current_vpn.step();
+            let mut stop_point_va = VirtAddr::from(end);
+            stop_point_va = stop_point_va.min(current_vpn.into());
+            let len_slice = stop_point_va.0 - current_va.0; 
+
+            let slice_src = unsafe {
+                core::slice::from_raw_parts(buffer.as_ptr().wrapping_add(len_copied), len_slice)
+            };
+            let slice_dst = unsafe {
+                let ptr = usize::from(current_pa).wrapping_add(current_va.page_offset()) as *mut u8;
+                core::slice::from_raw_parts_mut(ptr, len_slice)
+            };
+            slice_dst.copy_from_slice(slice_src);
+
+            current += len_slice;
+            len_copied += len_slice;
+        }
+    }
 }
 
 pub struct MapArea {

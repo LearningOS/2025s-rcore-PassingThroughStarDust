@@ -38,6 +38,8 @@ pub use processor::{
 };
 pub use signal::SignalFlags;
 pub use task::{TaskControlBlock, TaskStatus};
+//  ** for chapter 8 exercises
+pub use processor::copy_to_user;
 
 /// Make current task suspended and switch to the next task
 pub fn suspend_current_and_run_next() {

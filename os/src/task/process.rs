@@ -7,13 +7,15 @@ use super::{add_task, SignalFlags};
 use super::{pid_alloc, PidHandle};
 use crate::fs::{File, Stdin, Stdout};
 use crate::mm::{translated_refmut, MemorySet, KERNEL_SPACE};
-use crate::sync::{Condvar, Mutex, Detector, Semaphore, UPSafeCell};
+use crate::sync::{Condvar, Mutex, Semaphore, UPSafeCell};
 use crate::trap::{trap_handler, TrapContext};
 use alloc::string::String;
 use alloc::sync::{Arc, Weak};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefMut;
+//  ** for chapter 8 exercises
+use crate::sync::Banker;
 
 /// Process Control Block
 pub struct ProcessControlBlock {
@@ -49,15 +51,13 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
-    /// ** for chapter 8 exercises
-    /// whether to open deadlock_detection
-    pub deadlock_detection: bool,
-    /// ** for chapter 8 exercises
-    /// mutex detector
-    pub mutex_detector: Detector,
-    /// ** for chapter 8 exercises
-    /// semaphore detector
-    pub semaphore_detector: Detector,
+    //  ** for chapter 8 exercises
+    /// deadlock detection enabled?
+    pub deadlock_detect_enabled: bool,
+    /// mutex banker
+    pub mutex_banker: Banker,
+    /// semaphore banker
+    pub semaphore_banker: Banker,
 }
 
 impl ProcessControlBlockInner {
@@ -128,9 +128,10 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
-                    mutex_detector: Detector::new(),
-                    semaphore_detector: Detector::new(),
-                    deadlock_detection: false,
+                    // ** for chapter 8 exercises
+                    deadlock_detect_enabled: false,
+                    mutex_banker: Banker::new(),
+                    semaphore_banker: Banker::new(),
                 })
             },
         });
@@ -257,9 +258,10 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
-                    mutex_detector: Detector::new(),
-                    semaphore_detector: Detector::new(),
-                    deadlock_detection: false,
+                    // ** for chapter 8 exercises
+                    deadlock_detect_enabled: false,
+                    mutex_banker: Banker::new(),
+                    semaphore_banker: Banker::new(),
                 })
             },
         });

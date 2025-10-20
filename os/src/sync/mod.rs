@@ -4,10 +4,12 @@ mod condvar;
 mod mutex;
 mod semaphore;
 mod up;
-mod detector;
+//  ** for chapter 8 exercises
+mod banker;
 
 pub use condvar::Condvar;
 pub use mutex::{Mutex, MutexBlocking, MutexSpin};
 pub use semaphore::Semaphore;
 pub use up::UPSafeCell;
-pub use detector::Detector;
+//  ** for chapter 8 exercises
+pub use banker::Banker;
